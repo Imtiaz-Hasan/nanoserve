@@ -1,0 +1,117 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nanoserve"
+version = "0.1.0"
+description = "Production-shaped LLM serving engine with paged KV cache, continuous batching, prefix caching, Triton attention kernels, and speculative decoding."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    { name = "Imtiaz Hasan", email = "imtiaz.hasan121@gmail.com" },
+]
+keywords = [
+    "llm-serving",
+    "inference-engine",
+    "paged-attention",
+    "continuous-batching",
+    "speculative-decoding",
+    "kv-cache",
+    "triton",
+    "openai-compatible",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+dependencies = [
+    "torch>=2.4",
+    "numpy>=1.26",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.20",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "pydantic>=2.6",
+    "prometheus-client>=0.20",
+    "structlog>=24.1",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "hypothesis>=6.100",
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "httpx>=0.27",
+]
+triton = [
+    "triton>=3.0",
+]
+
+[project.scripts]
+nanoserve = "nanoserve.server.app:main"
+
+[project.urls]
+Homepage = "https://github.com/Imtiaz-Hasan/nanoserve"
+Repository = "https://github.com/Imtiaz-Hasan/nanoserve"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nanoserve"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["src", "tests", "benchmarks"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W", "F", "I", "N", "UP", "B", "A", "C4", "SIM",
+    "RET", "ARG", "ERA", "PL", "RUF",
+]
+ignore = [
+    "PLR0913", "PLR0917", "PLR2004", "PLR0911", "PLR0912", "PLR0915",
+    "RUF001", "RUF002", "RUF003",
+    "TC001", "TC002", "TC003", "TC006",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nanoserve"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "torch.*",
+    "numpy.*",
+    "safetensors.*",
+    "huggingface_hub.*",
+    "triton.*",
+    "prometheus_client.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore::DeprecationWarning"]
+markers = [
+    "gpu: requires CUDA GPU",
+    "slow: long-running test",
+]
