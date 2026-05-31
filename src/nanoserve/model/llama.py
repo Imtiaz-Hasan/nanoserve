@@ -10,6 +10,7 @@ import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
 from nanoserve.config import ModelConfig
+from nanoserve.kernels.reshape_cache import gather_paged_kv, reshape_and_cache
 from nanoserve.model.attention import reference_attention
 from nanoserve.model.rope import RotaryEmbedding
 
@@ -51,8 +52,10 @@ class LlamaAttention(nn.Module):
         positions: torch.Tensor,
         rope: RotaryEmbedding,
         kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
-        _cache_positions: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        slot_mapping: torch.Tensor | None = None,
+        block_tables: list[list[int]] | None = None,
+        seq_lens: list[int] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         """Forward pass.
 
         Args:
@@ -80,25 +83,41 @@ class LlamaAttention(nn.Module):
         # Apply RoPE
         q, k = rope.forward(q, k, positions)
 
-        # Update KV cache
-        if kv_cache is not None:
+        # Update and gather KV cache
+        if (
+            kv_cache is not None
+            and slot_mapping is not None
+            and block_tables is not None
+            and seq_lens is not None
+        ):
+            k_cache, v_cache = kv_cache
+            # 1. Scatter new tokens into physical paged cache
+            reshape_and_cache(k, v, k_cache, v_cache, slot_mapping)
+
+            # 2. Gather sequence's physical blocks into contiguous tensor for SDPA
+            gathered_k, gathered_v = gather_paged_kv(k_cache, v_cache, block_tables[0], seq_lens[0])
+            k_attend = gathered_k
+            v_attend = gathered_v
+        elif kv_cache is not None:
             k_prev, v_prev = kv_cache
             k_cache = torch.cat([k_prev, k], dim=2)
             v_cache = torch.cat([v_prev, v], dim=2)
-            k = k_cache
-            v = v_cache
+            k_attend = k_cache
+            v_attend = v_cache
+            kv_cache = (k_cache, v_cache)
         else:
-            k_cache = k
-            v_cache = v
+            k_attend = k
+            v_attend = v
+            kv_cache = (k, v)
 
         # Attention
-        attn_output = reference_attention(q, k, v, scale=self.scale)
+        attn_output = reference_attention(q, k_attend, v_attend, scale=self.scale)
 
         # Reshape back
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch, seq_len, -1)
         output = self.o_proj(attn_output)
 
-        return output, (k_cache, v_cache)
+        return output, kv_cache
 
 
 class LlamaMLP(nn.Module):
@@ -130,13 +149,21 @@ class LlamaDecoderLayer(nn.Module):
         positions: torch.Tensor,
         rope: RotaryEmbedding,
         kv_cache: tuple[torch.Tensor, torch.Tensor] | None = None,
-        cache_positions: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
+        slot_mapping: torch.Tensor | None = None,
+        block_tables: list[list[int]] | None = None,
+        seq_lens: list[int] | None = None,
+    ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         # Pre-norm attention
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
         hidden_states, new_kv = self.self_attn(
-            hidden_states, positions, rope, kv_cache, cache_positions
+            hidden_states=hidden_states,
+            positions=positions,
+            rope=rope,
+            kv_cache=kv_cache,
+            slot_mapping=slot_mapping,
+            block_tables=block_tables,
+            seq_lens=seq_lens,
         )
         hidden_states = residual + hidden_states
 
@@ -182,15 +209,19 @@ class LlamaForCausalLM(nn.Module):
         input_ids: torch.Tensor,
         positions: torch.Tensor,
         kv_caches: list[tuple[torch.Tensor, torch.Tensor]] | None = None,
-        cache_positions: torch.Tensor | None = None,
+        slot_mapping: torch.Tensor | None = None,
+        block_tables: list[list[int]] | None = None,
+        seq_lens: list[int] | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        """Forward pass.
+        """Forward pass with support for paged KV caches.
 
         Args:
             input_ids: (batch, seq_len) token ids
             positions: (batch, seq_len) or (seq_len,) position indices
-            kv_caches: list of per-layer (k_cache, v_cache) tensors, or None
-            cache_positions: positions to write in the contiguous cache
+            kv_caches: list of per-layer (k_cache, v_cache) physical tensors
+            slot_mapping: (num_tokens,) flat slot mappings for physical scatter
+            block_tables: per-sequence physical block table IDs
+            seq_lens: per-sequence active total lengths
 
         Returns:
             logits: (batch, seq_len, vocab_size)
@@ -202,9 +233,16 @@ class LlamaForCausalLM(nn.Module):
         for i, layer in enumerate(self.layers):
             layer_kv = kv_caches[i] if kv_caches is not None else None
             hidden_states, new_kv = layer(
-                hidden_states, positions, self.rope, layer_kv, cache_positions
+                hidden_states=hidden_states,
+                positions=positions,
+                rope=self.rope,
+                kv_cache=layer_kv,
+                slot_mapping=slot_mapping,
+                block_tables=block_tables,
+                seq_lens=seq_lens,
             )
-            new_kv_caches.append(new_kv)
+            if new_kv is not None:
+                new_kv_caches.append(new_kv)
 
         hidden_states = self.norm(hidden_states)
         logits = self.lm_head(hidden_states)

@@ -6,7 +6,6 @@ One call to step() = one forward pass = one token per running sequence.
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 import torch
 
@@ -70,16 +69,39 @@ class LLMEngine:
         self.tokenizer = SimpleTokenizer(vocab_size=config.model.vocab_size)
 
         # Block manager and scheduler
-        num_blocks = config.cache.num_gpu_blocks or 256
-        self.block_manager = BlockManager(num_blocks=num_blocks, block_size=config.cache.block_size)
+        self.num_blocks = config.cache.num_gpu_blocks or 256
+        self.block_size = config.cache.block_size
+        self.block_manager = BlockManager(num_blocks=self.num_blocks, block_size=self.block_size)
         self.scheduler = Scheduler(config.scheduler, self.block_manager)
 
         # Sampler
         self.sampler = Sampler()
 
-        # KV caches: per-layer (k, v) tensors, pre-allocated
-        # Week 1: contiguous cache per sequence (allocated on first use)
-        self._kv_caches: dict[int, list[tuple[Any, Any]]] = {}
+        # Physical KV caches: pre-allocated per layer
+        # Tensor shape: (num_blocks, block_size, num_kv_heads, head_dim)
+        self._kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for _ in range(config.model.num_layers):
+            k_cache = torch.zeros(
+                (
+                    self.num_blocks,
+                    self.block_size,
+                    config.model.num_kv_heads,
+                    config.model.head_dim,
+                ),
+                dtype=torch.float32,
+                device=self._device,
+            )
+            v_cache = torch.zeros(
+                (
+                    self.num_blocks,
+                    self.block_size,
+                    config.model.num_kv_heads,
+                    config.model.head_dim,
+                ),
+                dtype=torch.float32,
+                device=self._device,
+            )
+            self._kv_caches.append((k_cache, v_cache))
 
         # Stop checkers per request
         self._stop_checkers: dict[str, StopChecker] = {}
@@ -149,24 +171,35 @@ class LLMEngine:
                 # Prefill: process all prompt tokens
                 token_ids = seq.prompt_token_ids
                 positions = list(range(len(token_ids)))
+                current_total_len = len(token_ids)
             else:
                 # Decode: process only the last token
                 token_ids = [seq.last_token_id]
                 positions = [seq.num_total_tokens - 1]
+                current_total_len = seq.num_total_tokens
 
             # Forward pass
             input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._device)
             pos_tensor = torch.tensor(positions, dtype=torch.long, device=self._device)
 
+            block_table_obj = self.block_manager.get_block_table(seq)
+            if block_table_obj is None:
+                continue
+            physical_block_ids = block_table_obj.get_all_physical_blocks()
+            slot_mapping_list = self.block_manager.get_slot_mapping(seq, positions)
+            slot_mapping_tensor = torch.tensor(
+                slot_mapping_list, dtype=torch.long, device=self._device
+            )
+
             with torch.no_grad():
-                kv_caches = self._kv_caches.get(seq.seq_id)
-                cache_positions = pos_tensor
-
-                logits, new_kv = self.model.forward(
-                    input_ids, pos_tensor, kv_caches, cache_positions
+                logits, _ = self.model.forward(
+                    input_ids=input_ids,
+                    positions=pos_tensor,
+                    kv_caches=self._kv_caches,
+                    slot_mapping=slot_mapping_tensor,
+                    block_tables=[physical_block_ids],
+                    seq_lens=[current_total_len],
                 )
-
-                self._kv_caches[seq.seq_id] = new_kv
 
             # Sample from the last position's logits
             last_logits = logits[:, -1, :]
@@ -198,8 +231,8 @@ class LLMEngine:
                     if finish_reason == "stop"
                     else SequenceStatus.FINISHED_LENGTH
                 )
-                # Clean up KV cache
-                self._kv_caches.pop(seq.seq_id, None)
+                # Free sequence's physical blocks
+                self.block_manager.free(seq)
                 self._generated_text.pop(seq.seq_id, None)
 
             output = RequestOutput(

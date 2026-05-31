@@ -2,12 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.2.0] — 2026-06-03
+
+### Added
+- **Paged KV Cache**: Full `BlockManager` with physical block tracking, refcounting, and Copy-On-Write (COW)
+- **Dynamic BlockTable**: Logical-to-physical block mapping with sequence branching support
+- **Paged Kernel Operations**: `reshape_and_cache`, `gather_paged_kv`, and `copy_block_data`
+- **Property Fuzz Testing**: Hypothesis test suite verifying 5 memory conservation invariants across 10k random operations
+- **ADR-0001 Accepted**: Comprehensive memory fragmentation analysis and architecture decision record
+
 ## [0.1.0] — 2026-05-27
 
 ### Added
 - Initial vertical slice: weight loading, Llama forward pass, greedy generation
 - OpenAI-compatible API (`/v1/completions`, `/v1/chat/completions`)
-- Naive contiguous KV cache (to be replaced by paged cache in Week 2)
+- Naive contiguous KV cache baseline
 - CPU-testable toy model (2-layer, 4-head, 64-dim)
 - Prometheus metrics endpoint (`/metrics`)
 - Structured logging with `structlog`
