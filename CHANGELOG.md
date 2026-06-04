@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.3.0] — 2026-06-10
+
+### Added
+- **Full Sampling Suite**: Temperature scaling, Top-K truncation, Top-P (nucleus) filtering, and Min-P relative thresholding
+- **Penalties Module**: Multiplicative repetition penalty and additive frequency/presence penalties (`nanoserve.sampling.penalties`)
+- **Seeded Generator**: Isolated per-request `torch.Generator` for 100% deterministic reproducibility
+- **Statistical Correctness Gate**: Automated tests for nucleus mass confinement, low-T argmax convergence, and high-T uniformity
+- **Robust Stop Strings**: Multi-byte UTF-8 emoji detection and overlapping prefix stop criteria
+
 ## [0.2.0] — 2026-06-03
 
 ### Added

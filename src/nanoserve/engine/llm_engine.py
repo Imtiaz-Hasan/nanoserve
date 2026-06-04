@@ -203,7 +203,12 @@ class LLMEngine:
 
             # Sample from the last position's logits
             last_logits = logits[:, -1, :]
-            sampled = self.sampler.sample(last_logits, [seq_group.sampling_params])
+            sampled = self.sampler.sample(
+                logits=last_logits,
+                sampling_params_list=[seq_group.sampling_params],
+                history_tokens_list=[seq.all_token_ids],
+                output_tokens_list=[seq.output_token_ids],
+            )
             new_token_id = sampled[0]
 
             # Append token and decode

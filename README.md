@@ -13,10 +13,10 @@ nanoserve is not a wrapper. Every component — the block allocator, the schedul
 | **Llama-family forward pass** | ✅ | RMSNorm, RoPE, GQA, SwiGLU — from scratch in PyTorch |
 | **Paged KV cache** | ✅ | Block allocator, refcounting, COW, scatter/gather kernels (Week 2) |
 | **Greedy decoding** | ✅ | Deterministic argmax sampling |
+| **Full sampling suite** | ✅ | temperature, top-k/p, min-p, repetition/freq/presence penalties, seeds (Week 3) |
 | **OpenAI-compatible API** | ✅ | `/v1/chat/completions`, `/v1/completions`, SSE streaming |
 | **Scheduler** | ✅ | FCFS admission with block-budget enforcement |
 | **Prometheus metrics** | ✅ | TTFT/TPOT histograms, KV utilization, queue gauges |
-| **Full sampling suite** | 🔲 | temperature, top-k/p, min-p, penalties (Week 3) |
 | **Continuous batching** | 🔲 | Iteration-level scheduling (Week 4) |
 | **Preemption** | 🔲 | Recompute + swap (Week 5) |
 | **Chunked prefill** | 🔲 | Mixed prefill/decode batches (Week 6) |
