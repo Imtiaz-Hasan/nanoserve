@@ -91,27 +91,36 @@ class LlamaAttention(nn.Module):
             and seq_lens is not None
         ):
             k_cache, v_cache = kv_cache
-            # 1. Scatter new tokens into physical paged cache
+            # 1. Scatter all new tokens into physical paged cache
             reshape_and_cache(k, v, k_cache, v_cache, slot_mapping)
 
-            # 2. Gather sequence's physical blocks into contiguous tensor for SDPA
-            gathered_k, gathered_v = gather_paged_kv(k_cache, v_cache, block_tables[0], seq_lens[0])
-            k_attend = gathered_k
-            v_attend = gathered_v
+            # 2. Compute attention per sequence with isolated historical KV contexts
+            if batch == 1:
+                gathered_k, gathered_v = gather_paged_kv(
+                    k_cache, v_cache, block_tables[0], seq_lens[0]
+                )
+                attn_output = reference_attention(q, gathered_k, gathered_v, scale=self.scale)
+            else:
+                attn_outputs: list[torch.Tensor] = []
+                for b in range(batch):
+                    gathered_k, gathered_v = gather_paged_kv(
+                        k_cache, v_cache, block_tables[b], seq_lens[b]
+                    )
+                    attn_b = reference_attention(
+                        q[b : b + 1], gathered_k, gathered_v, scale=self.scale
+                    )
+                    attn_outputs.append(attn_b)
+                attn_output = torch.cat(attn_outputs, dim=0)
+
         elif kv_cache is not None:
             k_prev, v_prev = kv_cache
             k_cache = torch.cat([k_prev, k], dim=2)
             v_cache = torch.cat([v_prev, v], dim=2)
-            k_attend = k_cache
-            v_attend = v_cache
+            attn_output = reference_attention(q, k_cache, v_cache, scale=self.scale)
             kv_cache = (k_cache, v_cache)
         else:
-            k_attend = k
-            v_attend = v
+            attn_output = reference_attention(q, k, v, scale=self.scale)
             kv_cache = (k, v)
-
-        # Attention
-        attn_output = reference_attention(q, k_attend, v_attend, scale=self.scale)
 
         # Reshape back
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch, seq_len, -1)
@@ -130,7 +139,8 @@ class LlamaMLP(nn.Module):
         self.down_proj = nn.Linear(config.intermediate_size, config.hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+        out: torch.Tensor = self.down_proj(F.silu(self.gate_proj(x)) * self.up_proj(x))
+        return out
 
 
 class LlamaDecoderLayer(nn.Module):

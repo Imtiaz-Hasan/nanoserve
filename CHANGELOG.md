@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] — 2026-06-17
+
+### Added
+- **Continuous Batching**: Iteration-level scheduler managing waiting, running, and swapped queues (Orca-style)
+- **Multi-Sequence Batched Decode**: Single parallel GPU/CPU forward pass for all active decode sequences
+- **Dynamic Admission**: New requests admitted to active batch immediately after prefill without waiting for long sequences to finish
+- **Zero Token Padding**: Full FLOP efficiency across variable length requests with zero pad tokens
+- **Continuous Batching Tests**: Verifies asynchronous completion order and dynamic mid-flight request admission
+
 ## [0.3.0] — 2026-06-10
 
 ### Added

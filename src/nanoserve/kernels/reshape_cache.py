@@ -15,16 +15,17 @@ def reshape_and_cache(
     """Scatter computed key and value tokens into pre-allocated physical KV cache slots.
 
     Args:
-        key: (num_tokens, num_kv_heads, head_dim) or (batch, num_kv_heads, num_tokens, head_dim)
-        value: (num_tokens, num_kv_heads, head_dim) or (batch, num_kv_heads, num_tokens, head_dim)
+        key: (num_tokens, num_kv_heads, head_dim) or (batch, num_kv_heads, seq_len, head_dim)
+        value: (num_tokens, num_kv_heads, head_dim) or (batch, num_kv_heads, seq_len, head_dim)
         k_cache: (num_blocks, block_size, num_kv_heads, head_dim)
         v_cache: (num_blocks, block_size, num_kv_heads, head_dim)
         slot_mapping: (num_tokens,) flat slot indices
     """
     if key.dim() == 4:
-        # (batch, num_kv_heads, num_tokens, head_dim) -> (num_tokens, num_kv_heads, head_dim)
-        key = key.squeeze(0).transpose(0, 1)
-        value = value.squeeze(0).transpose(0, 1)
+        num_kv_heads = key.shape[1]
+        head_dim = key.shape[3]
+        key = key.transpose(1, 2).reshape(-1, num_kv_heads, head_dim)
+        value = value.transpose(1, 2).reshape(-1, num_kv_heads, head_dim)
 
     num_kv_heads = k_cache.shape[2]
     head_dim = k_cache.shape[3]

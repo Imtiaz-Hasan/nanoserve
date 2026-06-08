@@ -56,7 +56,7 @@ class RotaryEmbedding:
         Args:
             q: (batch, num_heads, seq_len, head_dim)
             k: (batch, num_kv_heads, seq_len, head_dim)
-            positions: (batch, seq_len) or (seq_len,) — position indices
+            positions: (batch, seq_len), (seq_len,), or (batch,) — position indices
 
         Returns:
             Rotated (q, k) with same shapes.
@@ -64,17 +64,26 @@ class RotaryEmbedding:
         cos = self._cos_cached.to(q.device)
         sin = self._sin_cached.to(q.device)
 
-        if positions.dim() == 1:
-            cos_pos = cos[positions]  # (seq_len, head_dim // 2)
-            sin_pos = sin[positions]
-        else:
-            cos_pos = cos[positions]  # (batch, seq_len, head_dim // 2)
-            sin_pos = sin[positions]
+        batch, _, seq_len, _ = q.shape
 
-        # Expand for broadcasting with heads: add head dimension
-        while cos_pos.dim() < q.dim():
-            cos_pos = cos_pos.unsqueeze(-3)
-            sin_pos = sin_pos.unsqueeze(-3)
+        if positions.dim() == 1:
+            if positions.shape[0] == batch and seq_len == 1:
+                # Batched decode: positions is (batch,)
+                pos_2d = positions.unsqueeze(1)
+            elif batch == 1:
+                # Single sequence prefill: positions is (seq_len,)
+                pos_2d = positions.unsqueeze(0)
+            else:
+                pos_2d = positions.view(batch, seq_len)
+        else:
+            pos_2d = positions
+
+        cos_pos = cos[pos_2d]  # (batch, seq_len, head_dim // 2)
+        sin_pos = sin[pos_2d]  # (batch, seq_len, head_dim // 2)
+
+        # Insert head dimension for broadcasting: (batch, 1, seq_len, head_dim // 2)
+        cos_pos = cos_pos.unsqueeze(1)
+        sin_pos = sin_pos.unsqueeze(1)
 
         q_rot = _apply_rotary(q, cos_pos, sin_pos)
         k_rot = _apply_rotary(k, cos_pos, sin_pos)

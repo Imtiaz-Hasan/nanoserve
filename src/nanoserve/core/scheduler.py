@@ -1,8 +1,4 @@
-"""Scheduler: manages waiting, running, and swapped sequence queues.
-
-Week 1: simple FCFS single-sequence scheduling.
-Week 4 implements full continuous batching with budget enforcement.
-"""
+"""Scheduler: iteration-level continuous batcher managing waiting, running, and swapped queues."""
 
 from __future__ import annotations
 
@@ -19,8 +15,8 @@ class SchedulerOutputs:
     """What the scheduler tells the model runner to execute this step."""
 
     scheduled_seq_groups: list[SequenceGroup]
-    num_prefill_groups: int
-    num_decode_groups: int
+    is_prefill: bool
+    num_batched_tokens: int
     blocks_to_swap_in: list[tuple[int, int]] = field(default_factory=list)
     blocks_to_swap_out: list[tuple[int, int]] = field(default_factory=list)
     blocks_to_copy: list[tuple[int, int]] = field(default_factory=list)
@@ -31,10 +27,12 @@ class SchedulerOutputs:
 
 
 class Scheduler:
-    """Iteration-level scheduler managing sequence lifecycle.
+    """Continuous iteration-level batcher (Orca style, Yu et al., OSDI 2022).
 
-    Week 1: processes one sequence at a time. No batching, no preemption.
-    The interface is designed for Week 4's continuous batching upgrade.
+    Maintains:
+      - waiting: new requests needing prefill
+      - running: active requests in decode phase
+      - swapped: preempted requests (swapped to CPU memory)
     """
 
     def __init__(
@@ -62,7 +60,7 @@ class Scheduler:
 
     def abort_seq_group(self, request_id: str) -> None:
         """Abort and free a request by ID."""
-        for queue in [self._running, list(self._waiting)]:
+        for queue in [self._running, list(self._waiting), list(self._swapped)]:
             for sg in queue:
                 if sg.request_id == request_id:
                     for seq in sg.sequences:
@@ -72,20 +70,12 @@ class Scheduler:
                         self._running.remove(sg)
                     return
 
-        # Also check waiting deque
         self._waiting = deque(sg for sg in self._waiting if sg.request_id != request_id)
+        self._swapped = deque(sg for sg in self._swapped if sg.request_id != request_id)
 
     def schedule(self) -> SchedulerOutputs:
-        """Run one scheduling iteration.
-
-        Week 1: admits at most one waiting sequence if running is empty,
-        or continues decoding the running sequence.
-        """
-        scheduled: list[SequenceGroup] = []
-        num_prefill = 0
-        num_decode = 0
-
-        # Retire finished sequences
+        """Run one iteration-level scheduling step."""
+        # 1. Clean up finished sequence groups
         still_running: list[SequenceGroup] = []
         for sg in self._running:
             if sg.is_finished:
@@ -95,34 +85,63 @@ class Scheduler:
                 still_running.append(sg)
         self._running = still_running
 
-        # Continue decoding running sequences
-        for sg in self._running:
-            # Extend blocks if needed for the next token
-            for seq in sg.get_unfinished_sequences():
+        # 2. If waiting requests exist and capacity allows, schedule prefill first
+        if self._waiting and len(self._running) < self.config.max_num_seqs:
+            scheduled_prefills: list[SequenceGroup] = []
+            num_batched_tokens = 0
+
+            while self._waiting and len(self._running) < self.config.max_num_seqs:
+                sg = self._waiting[0]
+                seq = sg.first_seq
+                prompt_len = len(seq.prompt_token_ids)
+
+                if num_batched_tokens + prompt_len > self.config.max_num_batched_tokens:
+                    break
+
+                if not self.block_manager.can_allocate(seq):
+                    break
+
+                self._waiting.popleft()
+                self.block_manager.allocate(seq)
+                seq.status = SequenceStatus.RUNNING
+                self._running.append(sg)
+                scheduled_prefills.append(sg)
+                num_batched_tokens += prompt_len
+
+            if scheduled_prefills:
+                return SchedulerOutputs(
+                    scheduled_seq_groups=scheduled_prefills,
+                    is_prefill=True,
+                    num_batched_tokens=num_batched_tokens,
+                )
+
+        # 3. Schedule all running sequences for batched decode
+        if self._running:
+            scheduled_decodes: list[SequenceGroup] = []
+            num_tokens = 0
+            for sg in self._running:
+                seq = sg.first_seq
+                # Ensure sequence has block capacity for next decode token
                 if self.block_manager.can_allocate(seq):
                     self.block_manager.allocate(seq)
-            scheduled.append(sg)
-            num_decode += 1
+                    scheduled_decodes.append(sg)
+                    num_tokens += 1
+                    if len(scheduled_decodes) >= self.config.max_num_seqs:
+                        break
+                else:
+                    break
 
-        # Admit new sequences from waiting (Week 1: one at a time)
-        while self._waiting and len(self._running) < self.config.max_num_seqs:
-            sg = self._waiting[0]
-            seq = sg.first_seq
-
-            if not self.block_manager.can_allocate(seq):
-                break
-
-            self._waiting.popleft()
-            self.block_manager.allocate(seq)
-            seq.status = SequenceStatus.RUNNING
-            self._running.append(sg)
-            scheduled.append(sg)
-            num_prefill += 1
+            if scheduled_decodes:
+                return SchedulerOutputs(
+                    scheduled_seq_groups=scheduled_decodes,
+                    is_prefill=False,
+                    num_batched_tokens=num_tokens,
+                )
 
         return SchedulerOutputs(
-            scheduled_seq_groups=scheduled,
-            num_prefill_groups=num_prefill,
-            num_decode_groups=num_decode,
+            scheduled_seq_groups=[],
+            is_prefill=True,
+            num_batched_tokens=0,
         )
 
     def has_unfinished_seqs(self) -> bool:

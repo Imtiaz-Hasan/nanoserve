@@ -150,9 +150,10 @@ class LLMEngine:
         self._stop_checkers.pop(request_id, None)
 
     def step(self) -> list[RequestOutput]:
-        """Execute one engine iteration: schedule → forward → sample → update.
+        """Execute one engine iteration with continuous batching.
 
-        Returns outputs for all requests that produced a token this step.
+        Prefill requests run prompt prefill. Decode requests run batched
+        multi-sequence decode in a single forward pass.
         """
         scheduler_output = self.scheduler.schedule()
         if scheduler_output.is_empty:
@@ -160,36 +161,84 @@ class LLMEngine:
 
         outputs: list[RequestOutput] = []
 
-        for seq_group in scheduler_output.scheduled_seq_groups:
-            seq = seq_group.first_seq
-            if seq.status.is_finished:
-                continue
-
-            is_prefill = seq.num_output_tokens == 0
-
-            if is_prefill:
-                # Prefill: process all prompt tokens
+        if scheduler_output.is_prefill:
+            # Prefill phase: process prompt tokens
+            for seq_group in scheduler_output.scheduled_seq_groups:
+                seq = seq_group.first_seq
                 token_ids = seq.prompt_token_ids
                 positions = list(range(len(token_ids)))
                 current_total_len = len(token_ids)
-            else:
-                # Decode: process only the last token
-                token_ids = [seq.last_token_id]
-                positions = [seq.num_total_tokens - 1]
-                current_total_len = seq.num_total_tokens
 
-            # Forward pass
-            input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._device)
-            pos_tensor = torch.tensor(positions, dtype=torch.long, device=self._device)
+                input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._device)
+                pos_tensor = torch.tensor(positions, dtype=torch.long, device=self._device)
 
-            block_table_obj = self.block_manager.get_block_table(seq)
-            if block_table_obj is None:
-                continue
-            physical_block_ids = block_table_obj.get_all_physical_blocks()
-            slot_mapping_list = self.block_manager.get_slot_mapping(seq, positions)
-            slot_mapping_tensor = torch.tensor(
-                slot_mapping_list, dtype=torch.long, device=self._device
-            )
+                block_table_obj = self.block_manager.get_block_table(seq)
+                if block_table_obj is None:
+                    continue
+                physical_block_ids = block_table_obj.get_all_physical_blocks()
+                slot_mapping_list = self.block_manager.get_slot_mapping(seq, positions)
+                slot_mapping_tensor = torch.tensor(
+                    slot_mapping_list, dtype=torch.long, device=self._device
+                )
+
+                with torch.no_grad():
+                    logits, _ = self.model.forward(
+                        input_ids=input_ids,
+                        positions=pos_tensor,
+                        kv_caches=self._kv_caches,
+                        slot_mapping=slot_mapping_tensor,
+                        block_tables=[physical_block_ids],
+                        seq_lens=[current_total_len],
+                    )
+
+                last_logits = logits[:, -1, :]
+                sampled = self.sampler.sample(
+                    logits=last_logits,
+                    sampling_params_list=[seq_group.sampling_params],
+                    history_tokens_list=[seq.all_token_ids],
+                    output_tokens_list=[seq.output_token_ids],
+                )
+                new_token_id = sampled[0]
+
+                seq.append_token(new_token_id)
+                token_text = self.tokenizer.decode_token(new_token_id)
+                self._generated_text[seq.seq_id] = (
+                    self._generated_text.get(seq.seq_id, "") + token_text
+                )
+
+                finish_reason = self._check_finish(seq, seq_group, new_token_id)
+                outputs.append(
+                    self._make_output(seq, seq_group, new_token_id, token_text, finish_reason)
+                )
+
+        else:
+            # Batched Decode phase: process all running sequences in parallel
+            scheduled = [
+                sg
+                for sg in scheduler_output.scheduled_seq_groups
+                if not sg.first_seq.status.is_finished
+            ]
+            if not scheduled:
+                return []
+
+            token_ids_batch = [[sg.first_seq.last_token_id] for sg in scheduled]
+            positions_batch = [sg.first_seq.num_total_tokens - 1 for sg in scheduled]
+            seq_lens_batch = [sg.first_seq.num_total_tokens for sg in scheduled]
+
+            input_ids = torch.tensor(token_ids_batch, dtype=torch.long, device=self._device)
+            pos_tensor = torch.tensor(positions_batch, dtype=torch.long, device=self._device)
+
+            slots_list: list[int] = []
+            block_tables_list: list[list[int]] = []
+            for sg in scheduled:
+                seq = sg.first_seq
+                table = self.block_manager.get_block_table(seq)
+                block_tables_list.append(table.get_all_physical_blocks() if table else [])
+                slots_list.append(
+                    self.block_manager.get_slot_mapping(seq, [seq.num_total_tokens - 1])[0]
+                )
+
+            slot_mapping_tensor = torch.tensor(slots_list, dtype=torch.long, device=self._device)
 
             with torch.no_grad():
                 logits, _ = self.model.forward(
@@ -197,70 +246,93 @@ class LLMEngine:
                     positions=pos_tensor,
                     kv_caches=self._kv_caches,
                     slot_mapping=slot_mapping_tensor,
-                    block_tables=[physical_block_ids],
-                    seq_lens=[current_total_len],
+                    block_tables=block_tables_list,
+                    seq_lens=seq_lens_batch,
                 )
 
-            # Sample from the last position's logits
-            last_logits = logits[:, -1, :]
-            sampled = self.sampler.sample(
+            last_logits = logits.squeeze(1) if logits.dim() == 3 else logits
+            sampling_params_list = [sg.sampling_params for sg in scheduled]
+            history_tokens_list = [sg.first_seq.all_token_ids for sg in scheduled]
+            output_tokens_list = [sg.first_seq.output_token_ids for sg in scheduled]
+
+            sampled_tokens = self.sampler.sample(
                 logits=last_logits,
-                sampling_params_list=[seq_group.sampling_params],
-                history_tokens_list=[seq.all_token_ids],
-                output_tokens_list=[seq.output_token_ids],
+                sampling_params_list=sampling_params_list,
+                history_tokens_list=history_tokens_list,
+                output_tokens_list=output_tokens_list,
             )
-            new_token_id = sampled[0]
 
-            # Append token and decode
-            seq.append_token(new_token_id)
-            token_text = self.tokenizer.decode_token(new_token_id)
-            self._generated_text[seq.seq_id] = self._generated_text.get(seq.seq_id, "") + token_text
+            for i, sg in enumerate(scheduled):
+                seq = sg.first_seq
+                new_token_id = sampled_tokens[i]
 
-            # Check stopping conditions
-            finish_reason: str | None = None
-            stop_checker = self._stop_checkers.get(seq_group.request_id)
-
-            if stop_checker and stop_checker.should_stop_token(new_token_id):
-                finish_reason = "stop"
-            elif stop_checker:
-                matched = stop_checker.should_stop_string(self._generated_text.get(seq.seq_id, ""))
-                if matched:
-                    finish_reason = "stop"
-
-            if seq.num_output_tokens >= seq_group.sampling_params.max_tokens:
-                finish_reason = "length"
-
-            if finish_reason:
-                seq.status = (
-                    SequenceStatus.FINISHED_STOPPED
-                    if finish_reason == "stop"
-                    else SequenceStatus.FINISHED_LENGTH
+                seq.append_token(new_token_id)
+                token_text = self.tokenizer.decode_token(new_token_id)
+                self._generated_text[seq.seq_id] = (
+                    self._generated_text.get(seq.seq_id, "") + token_text
                 )
-                # Free sequence's physical blocks
-                self.block_manager.free(seq)
-                self._generated_text.pop(seq.seq_id, None)
 
-            output = RequestOutput(
-                request_id=seq_group.request_id,
-                prompt=self.tokenizer.decode(seq_group.prompt_token_ids),
-                outputs=[
-                    CompletionOutput(
-                        index=0,
-                        token_id=new_token_id,
-                        text=token_text,
-                        finish_reason=finish_reason,
-                    )
-                ],
-                finished=finish_reason is not None,
-                prompt_token_ids=seq_group.prompt_token_ids,
-                num_output_tokens=seq.num_output_tokens,
-            )
-            outputs.append(output)
-
-            if finish_reason:
-                self._stop_checkers.pop(seq_group.request_id, None)
+                finish_reason = self._check_finish(seq, sg, new_token_id)
+                outputs.append(self._make_output(seq, sg, new_token_id, token_text, finish_reason))
 
         return outputs
+
+    def _check_finish(
+        self,
+        seq: Sequence,
+        seq_group: SequenceGroup,
+        new_token_id: int,
+    ) -> str | None:
+        """Check stopping criteria for a sequence and update status."""
+        finish_reason: str | None = None
+        stop_checker = self._stop_checkers.get(seq_group.request_id)
+
+        if stop_checker and stop_checker.should_stop_token(new_token_id):
+            finish_reason = "stop"
+        elif stop_checker:
+            matched = stop_checker.should_stop_string(self._generated_text.get(seq.seq_id, ""))
+            if matched:
+                finish_reason = "stop"
+
+        if seq.num_output_tokens >= seq_group.sampling_params.max_tokens:
+            finish_reason = "length"
+
+        if finish_reason:
+            seq.status = (
+                SequenceStatus.FINISHED_STOPPED
+                if finish_reason == "stop"
+                else SequenceStatus.FINISHED_LENGTH
+            )
+            self.block_manager.free(seq)
+            self._generated_text.pop(seq.seq_id, None)
+            self._stop_checkers.pop(seq_group.request_id, None)
+
+        return finish_reason
+
+    def _make_output(
+        self,
+        seq: Sequence,
+        seq_group: SequenceGroup,
+        new_token_id: int,
+        token_text: str,
+        finish_reason: str | None,
+    ) -> RequestOutput:
+        """Construct RequestOutput dataclass."""
+        return RequestOutput(
+            request_id=seq_group.request_id,
+            prompt=self.tokenizer.decode(seq_group.prompt_token_ids),
+            outputs=[
+                CompletionOutput(
+                    index=0,
+                    token_id=new_token_id,
+                    text=token_text,
+                    finish_reason=finish_reason,
+                )
+            ],
+            finished=finish_reason is not None,
+            prompt_token_ids=seq_group.prompt_token_ids,
+            num_output_tokens=seq.num_output_tokens,
+        )
 
     def has_unfinished_requests(self) -> bool:
         """Whether there are any requests still being processed."""
