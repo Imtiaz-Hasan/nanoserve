@@ -14,6 +14,7 @@ from nanoserve.core.block_manager import BlockManager
 from nanoserve.core.scheduler import Scheduler
 from nanoserve.core.sequence import Sequence, SequenceGroup, SequenceStatus
 from nanoserve.engine.output import CompletionOutput, RequestOutput
+from nanoserve.kernels.reshape_cache import swap_blocks
 from nanoserve.model.llama import LlamaForCausalLM
 from nanoserve.model.loader import load_model
 from nanoserve.sampling.params import SamplingParams
@@ -71,13 +72,13 @@ class LLMEngine:
         # Block manager and scheduler
         self.num_blocks = config.cache.num_gpu_blocks or 256
         self.block_size = config.cache.block_size
-        self.block_manager = BlockManager(num_blocks=self.num_blocks, block_size=self.block_size)
+        self.block_manager = BlockManager.from_config(config.model, config.cache)
         self.scheduler = Scheduler(config.scheduler, self.block_manager)
 
         # Sampler
         self.sampler = Sampler()
 
-        # Physical KV caches: pre-allocated per layer
+        # Physical GPU KV caches: pre-allocated per layer
         # Tensor shape: (num_blocks, block_size, num_kv_heads, head_dim)
         self._kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
         for _ in range(config.model.num_layers):
@@ -102,6 +103,22 @@ class LLMEngine:
                 device=self._device,
             )
             self._kv_caches.append((k_cache, v_cache))
+
+        # Physical CPU KV caches for swap preemption
+        self._cpu_kv_caches: list[tuple[torch.Tensor, torch.Tensor]] = []
+        for _ in range(config.model.num_layers):
+            k_cpu = torch.zeros(
+                (
+                    config.cache.num_cpu_blocks,
+                    self.block_size,
+                    config.model.num_kv_heads,
+                    config.model.head_dim,
+                ),
+                dtype=torch.float32,
+                device="cpu",
+            )
+            v_cpu = torch.zeros_like(k_cpu)
+            self._cpu_kv_caches.append((k_cpu, v_cpu))
 
         # Stop checkers per request
         self._stop_checkers: dict[str, StopChecker] = {}
@@ -150,7 +167,7 @@ class LLMEngine:
         self._stop_checkers.pop(request_id, None)
 
     def step(self) -> list[RequestOutput]:
-        """Execute one engine iteration with continuous batching.
+        """Execute one engine iteration with continuous batching and preemption.
 
         Prefill requests run prompt prefill. Decode requests run batched
         multi-sequence decode in a single forward pass.
@@ -159,13 +176,38 @@ class LLMEngine:
         if scheduler_output.is_empty:
             return []
 
+        # 1. Execute swap-in transfers (CPU -> GPU)
+        if scheduler_output.blocks_to_swap_in:
+            swap_in_map = dict(scheduler_output.blocks_to_swap_in)
+            for l_idx in range(len(self._kv_caches)):
+                swap_blocks(
+                    self._cpu_kv_caches[l_idx][0],
+                    self._cpu_kv_caches[l_idx][1],
+                    self._kv_caches[l_idx][0],
+                    self._kv_caches[l_idx][1],
+                    swap_in_map,
+                )
+            return []
+
+        # 2. Execute swap-out transfers (GPU -> CPU)
+        if scheduler_output.blocks_to_swap_out:
+            swap_out_map = dict(scheduler_output.blocks_to_swap_out)
+            for l_idx in range(len(self._kv_caches)):
+                swap_blocks(
+                    self._kv_caches[l_idx][0],
+                    self._kv_caches[l_idx][1],
+                    self._cpu_kv_caches[l_idx][0],
+                    self._cpu_kv_caches[l_idx][1],
+                    swap_out_map,
+                )
+
         outputs: list[RequestOutput] = []
 
         if scheduler_output.is_prefill:
-            # Prefill phase: process prompt tokens
+            # Prefill phase: process prompt / recompute history tokens
             for seq_group in scheduler_output.scheduled_seq_groups:
                 seq = seq_group.first_seq
-                token_ids = seq.prompt_token_ids
+                token_ids = seq.all_token_ids
                 positions = list(range(len(token_ids)))
                 current_total_len = len(token_ids)
 

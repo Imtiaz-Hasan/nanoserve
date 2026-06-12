@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.5.0] — 2026-06-24
+
+### Added
+- **Preemption Subsystem**: Dual eviction modes (Recompute & CPU memory Swap) protecting against GPU OOM errors
+- **Dual-Pool Memory Allocation**: `BlockManager` support for CPU host block pools alongside GPU block pools
+- **Asynchronous KV Transfer Kernel**: `swap_blocks` for physical KV cache memory transfers between host and device
+- **LIFO Victim Selection**: Prioritized eviction with resume precedence (`swapped` > `running` > `waiting`)
+- **ADR-0002**: Mathematical trade-off analysis between PCIe bandwidth and recompute FLOPs
+- **Preemption Tests**: Verification under extreme memory pressure (4 blocks / 8 requests) with 100% output determinism
+
 ## [0.4.0] — 2026-06-17
 
 ### Added

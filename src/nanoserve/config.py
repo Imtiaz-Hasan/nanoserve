@@ -60,11 +60,12 @@ class CacheConfig:
 
 @dataclass(frozen=True)
 class SchedulerConfig:
-    """Scheduler budget constraints."""
+    """Scheduler budget constraints and preemption policies."""
 
     max_num_seqs: int = 128
     max_num_batched_tokens: int = 2048
     max_paddings: int = 256
+    preemption_mode: str = "recompute"  # "recompute" or "swap"
 
 
 @dataclass(frozen=True)

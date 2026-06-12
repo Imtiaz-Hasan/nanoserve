@@ -97,3 +97,24 @@ def copy_block_data(
     """Copy physical KV tensor activations from source block to destination block (during COW)."""
     k_cache[dst_block_id].copy_(k_cache[src_block_id])
     v_cache[dst_block_id].copy_(v_cache[src_block_id])
+
+
+def swap_blocks(
+    src_k: torch.Tensor,
+    src_v: torch.Tensor,
+    dst_k: torch.Tensor,
+    dst_v: torch.Tensor,
+    block_mapping: dict[int, int],
+) -> None:
+    """Transfer physical KV cache blocks between device (GPU) and host (CPU) memory pools.
+
+    Args:
+        src_k: Source key cache tensor
+        src_v: Source value cache tensor
+        dst_k: Destination key cache tensor
+        dst_v: Destination value cache tensor
+        block_mapping: Mapping from source physical block ID to destination physical block ID
+    """
+    for src_id, dst_id in block_mapping.items():
+        dst_k[dst_id].copy_(src_k[src_id], non_blocking=True)
+        dst_v[dst_id].copy_(src_v[src_id], non_blocking=True)

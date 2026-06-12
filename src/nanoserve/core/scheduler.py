@@ -1,4 +1,4 @@
-"""Scheduler: iteration-level continuous batcher managing waiting, running, and swapped queues."""
+"""Scheduler: iteration-level continuous batcher with preemption (swap and recompute)."""
 
 from __future__ import annotations
 
@@ -23,16 +23,20 @@ class SchedulerOutputs:
 
     @property
     def is_empty(self) -> bool:
-        return len(self.scheduled_seq_groups) == 0
+        return (
+            len(self.scheduled_seq_groups) == 0
+            and not self.blocks_to_swap_in
+            and not self.blocks_to_swap_out
+        )
 
 
 class Scheduler:
-    """Continuous iteration-level batcher (Orca style, Yu et al., OSDI 2022).
+    """Continuous iteration-level batcher with preemption support.
 
     Maintains:
-      - waiting: new requests needing prefill
+      - waiting: new requests needing initial prefill (or recomputed prefill)
       - running: active requests in decode phase
-      - swapped: preempted requests (swapped to CPU memory)
+      - swapped: preempted requests swapped out to CPU memory
     """
 
     def __init__(
@@ -45,6 +49,7 @@ class Scheduler:
         self._waiting: deque[SequenceGroup] = deque()
         self._running: list[SequenceGroup] = []
         self._swapped: deque[SequenceGroup] = deque()
+        self.num_preemptions: int = 0
 
     @property
     def num_waiting(self) -> int:
@@ -53,6 +58,10 @@ class Scheduler:
     @property
     def num_running(self) -> int:
         return len(self._running)
+
+    @property
+    def num_swapped(self) -> int:
+        return len(self._swapped)
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         """Add a new request to the waiting queue."""
@@ -74,7 +83,7 @@ class Scheduler:
         self._swapped = deque(sg for sg in self._swapped if sg.request_id != request_id)
 
     def schedule(self) -> SchedulerOutputs:
-        """Run one iteration-level scheduling step."""
+        """Run one iteration-level scheduling step with preemption."""
         # 1. Clean up finished sequence groups
         still_running: list[SequenceGroup] = []
         for sg in self._running:
@@ -85,7 +94,23 @@ class Scheduler:
                 still_running.append(sg)
         self._running = still_running
 
-        # 2. If waiting requests exist and capacity allows, schedule prefill first
+        # 2. Check swapped queue: resume preempted requests (highest priority)
+        if self._swapped and len(self._running) < self.config.max_num_seqs:
+            sg = self._swapped[0]
+            seq = sg.first_seq
+            if self.block_manager.can_swap_in(seq):
+                self._swapped.popleft()
+                swap_in_map = self.block_manager.swap_in(seq)
+                seq.status = SequenceStatus.RUNNING
+                self._running.append(sg)
+                return SchedulerOutputs(
+                    scheduled_seq_groups=[],
+                    is_prefill=False,
+                    num_batched_tokens=0,
+                    blocks_to_swap_in=list(swap_in_map.items()),
+                )
+
+        # 3. Admit new sequences from waiting queue for prefill
         if self._waiting and len(self._running) < self.config.max_num_seqs:
             scheduled_prefills: list[SequenceGroup] = []
             num_batched_tokens = 0
@@ -93,7 +118,7 @@ class Scheduler:
             while self._waiting and len(self._running) < self.config.max_num_seqs:
                 sg = self._waiting[0]
                 seq = sg.first_seq
-                prompt_len = len(seq.prompt_token_ids)
+                prompt_len = len(seq.all_token_ids)
 
                 if num_batched_tokens + prompt_len > self.config.max_num_batched_tokens:
                     break
@@ -115,27 +140,54 @@ class Scheduler:
                     num_batched_tokens=num_batched_tokens,
                 )
 
-        # 3. Schedule all running sequences for batched decode
+        # 4. If running sequences exist, schedule batched decode (with preemption if OOM)
         if self._running:
+            blocks_to_swap_out: list[tuple[int, int]] = []
+
+            # Preemption loop: if any sequence cannot allocate next block, preempt victims (LIFO)
+            i = 0
+            while i < len(self._running):
+                seq = self._running[i].first_seq
+                if not self.block_manager.can_allocate(seq):
+                    if len(self._running) <= 1:
+                        break
+                    victim_sg = self._running.pop()
+                    victim_seq = victim_sg.first_seq
+                    self.num_preemptions += 1
+
+                    if self.config.preemption_mode == "swap" and self.block_manager.can_swap_out(
+                        victim_seq
+                    ):
+                        swap_out_map = self.block_manager.swap_out(victim_seq)
+                        victim_seq.status = SequenceStatus.SWAPPED
+                        self._swapped.append(victim_sg)
+                        blocks_to_swap_out.extend(list(swap_out_map.items()))
+                    else:
+                        self.block_manager.free(victim_seq)
+                        victim_seq.status = SequenceStatus.WAITING
+                        self._waiting.appendleft(victim_sg)
+
+                    i = 0
+                    continue
+                i += 1
+
             scheduled_decodes: list[SequenceGroup] = []
             num_tokens = 0
             for sg in self._running:
                 seq = sg.first_seq
-                # Ensure sequence has block capacity for next decode token
                 if self.block_manager.can_allocate(seq):
                     self.block_manager.allocate(seq)
                     scheduled_decodes.append(sg)
                     num_tokens += 1
                     if len(scheduled_decodes) >= self.config.max_num_seqs:
                         break
-                else:
-                    break
 
-            if scheduled_decodes:
+            if scheduled_decodes or blocks_to_swap_out:
                 return SchedulerOutputs(
                     scheduled_seq_groups=scheduled_decodes,
                     is_prefill=False,
                     num_batched_tokens=num_tokens,
+                    blocks_to_swap_out=blocks_to_swap_out,
                 )
 
         return SchedulerOutputs(
