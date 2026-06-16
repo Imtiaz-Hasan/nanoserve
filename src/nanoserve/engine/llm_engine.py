@@ -203,119 +203,94 @@ class LLMEngine:
 
         outputs: list[RequestOutput] = []
 
-        if scheduler_output.is_prefill:
-            # Prefill phase: process prompt / recompute history tokens
-            for seq_group in scheduler_output.scheduled_seq_groups:
-                seq = seq_group.first_seq
-                token_ids = seq.all_token_ids
-                positions = list(range(len(token_ids)))
-                current_total_len = len(token_ids)
+        scheduled = [
+            sg
+            for sg in scheduler_output.scheduled_seq_groups
+            if not sg.first_seq.status.is_finished
+        ]
+        if not scheduled:
+            return []
 
-                input_ids = torch.tensor([token_ids], dtype=torch.long, device=self._device)
-                pos_tensor = torch.tensor(positions, dtype=torch.long, device=self._device)
+        all_input_ids: list[int] = []
+        all_positions: list[int] = []
+        all_slots: list[int] = []
+        block_tables_list: list[list[int]] = []
+        seq_lens_list: list[int] = []
+        seq_token_ranges: list[tuple[int, int]] = []
+        current_offset = 0
 
-                block_table_obj = self.block_manager.get_block_table(seq)
-                if block_table_obj is None:
-                    continue
-                physical_block_ids = block_table_obj.get_all_physical_blocks()
-                slot_mapping_list = self.block_manager.get_slot_mapping(seq, positions)
-                slot_mapping_tensor = torch.tensor(
-                    slot_mapping_list, dtype=torch.long, device=self._device
-                )
+        for sg in scheduled:
+            seq = sg.first_seq
+            chunk_len = scheduler_output.seq_chunk_lens.get(seq.seq_id, 1)
 
-                with torch.no_grad():
-                    logits, _ = self.model.forward(
-                        input_ids=input_ids,
-                        positions=pos_tensor,
-                        kv_caches=self._kv_caches,
-                        slot_mapping=slot_mapping_tensor,
-                        block_tables=[physical_block_ids],
-                        seq_lens=[current_total_len],
-                    )
+            if chunk_len == 1 and seq.is_prefill_done:
+                # Running decode token
+                token_ids = [seq.last_token_id]
+                positions = [seq.num_total_tokens - 1]
+                total_kv_len = seq.num_total_tokens
+            else:
+                # Chunked prefill tokens
+                start_pos = seq.num_computed_tokens
+                token_ids = seq.all_token_ids[start_pos : start_pos + chunk_len]
+                positions = list(range(start_pos, start_pos + chunk_len))
+                total_kv_len = start_pos + chunk_len
 
-                last_logits = logits[:, -1, :]
-                sampled = self.sampler.sample(
-                    logits=last_logits,
-                    sampling_params_list=[seq_group.sampling_params],
-                    history_tokens_list=[seq.all_token_ids],
-                    output_tokens_list=[seq.output_token_ids],
-                )
-                new_token_id = sampled[0]
+            table = self.block_manager.get_block_table(seq)
+            block_tables_list.append(table.get_all_physical_blocks() if table else [])
+            seq_lens_list.append(total_kv_len)
 
-                seq.append_token(new_token_id)
-                token_text = self.tokenizer.decode_token(new_token_id)
-                self._generated_text[seq.seq_id] = (
-                    self._generated_text.get(seq.seq_id, "") + token_text
-                )
+            slots = self.block_manager.get_slot_mapping(seq, positions)
+            all_input_ids.extend(token_ids)
+            all_positions.extend(positions)
+            all_slots.extend(slots)
 
-                finish_reason = self._check_finish(seq, seq_group, new_token_id)
-                outputs.append(
-                    self._make_output(seq, seq_group, new_token_id, token_text, finish_reason)
-                )
+            seq_token_ranges.append((current_offset, current_offset + chunk_len))
+            current_offset += chunk_len
 
-        else:
-            # Batched Decode phase: process all running sequences in parallel
-            scheduled = [
-                sg
-                for sg in scheduler_output.scheduled_seq_groups
-                if not sg.first_seq.status.is_finished
-            ]
-            if not scheduled:
-                return []
+        input_ids = torch.tensor([all_input_ids], dtype=torch.long, device=self._device)
+        pos_tensor = torch.tensor(all_positions, dtype=torch.long, device=self._device)
+        slot_mapping_tensor = torch.tensor(all_slots, dtype=torch.long, device=self._device)
 
-            token_ids_batch = [[sg.first_seq.last_token_id] for sg in scheduled]
-            positions_batch = [sg.first_seq.num_total_tokens - 1 for sg in scheduled]
-            seq_lens_batch = [sg.first_seq.num_total_tokens for sg in scheduled]
-
-            input_ids = torch.tensor(token_ids_batch, dtype=torch.long, device=self._device)
-            pos_tensor = torch.tensor(positions_batch, dtype=torch.long, device=self._device)
-
-            slots_list: list[int] = []
-            block_tables_list: list[list[int]] = []
-            for sg in scheduled:
-                seq = sg.first_seq
-                table = self.block_manager.get_block_table(seq)
-                block_tables_list.append(table.get_all_physical_blocks() if table else [])
-                slots_list.append(
-                    self.block_manager.get_slot_mapping(seq, [seq.num_total_tokens - 1])[0]
-                )
-
-            slot_mapping_tensor = torch.tensor(slots_list, dtype=torch.long, device=self._device)
-
-            with torch.no_grad():
-                logits, _ = self.model.forward(
-                    input_ids=input_ids,
-                    positions=pos_tensor,
-                    kv_caches=self._kv_caches,
-                    slot_mapping=slot_mapping_tensor,
-                    block_tables=block_tables_list,
-                    seq_lens=seq_lens_batch,
-                )
-
-            last_logits = logits.squeeze(1) if logits.dim() == 3 else logits
-            sampling_params_list = [sg.sampling_params for sg in scheduled]
-            history_tokens_list = [sg.first_seq.all_token_ids for sg in scheduled]
-            output_tokens_list = [sg.first_seq.output_token_ids for sg in scheduled]
-
-            sampled_tokens = self.sampler.sample(
-                logits=last_logits,
-                sampling_params_list=sampling_params_list,
-                history_tokens_list=history_tokens_list,
-                output_tokens_list=output_tokens_list,
+        with torch.no_grad():
+            logits, _ = self.model.forward(
+                input_ids=input_ids,
+                positions=pos_tensor,
+                kv_caches=self._kv_caches,
+                slot_mapping=slot_mapping_tensor,
+                block_tables=block_tables_list,
+                seq_lens=seq_lens_list,
+                seq_token_ranges=seq_token_ranges,
             )
 
-            for i, sg in enumerate(scheduled):
-                seq = sg.first_seq
-                new_token_id = sampled_tokens[i]
+        # Process each sequence's results
+        for i, sg in enumerate(scheduled):
+            seq = sg.first_seq
+            start_idx, end_idx = seq_token_ranges[i]
+            chunk_len = end_idx - start_idx
+            last_token_pos = end_idx - 1
+            last_logits = logits[:, last_token_pos, :]
 
-                seq.append_token(new_token_id)
-                token_text = self.tokenizer.decode_token(new_token_id)
-                self._generated_text[seq.seq_id] = (
-                    self._generated_text.get(seq.seq_id, "") + token_text
-                )
+            if not seq.is_prefill_done:
+                seq.num_computed_tokens += chunk_len
+                if seq.num_computed_tokens < len(seq.all_token_ids):
+                    # Intermediate prefill chunk: don't sample yet
+                    continue
 
-                finish_reason = self._check_finish(seq, sg, new_token_id)
-                outputs.append(self._make_output(seq, sg, new_token_id, token_text, finish_reason))
+            # Prefill completed on this step or in decode phase: sample next token
+            sampled_tokens = self.sampler.sample(
+                logits=last_logits,
+                sampling_params_list=[sg.sampling_params],
+                history_tokens_list=[seq.all_token_ids],
+                output_tokens_list=[seq.output_token_ids],
+            )
+            new_token_id = sampled_tokens[0]
+
+            seq.append_token(new_token_id)
+            token_text = self.tokenizer.decode_token(new_token_id)
+            self._generated_text[seq.seq_id] = self._generated_text.get(seq.seq_id, "") + token_text
+
+            finish_reason = self._check_finish(seq, sg, new_token_id)
+            outputs.append(self._make_output(seq, sg, new_token_id, token_text, finish_reason))
 
         return outputs
 

@@ -55,21 +55,26 @@ class LlamaAttention(nn.Module):
         slot_mapping: torch.Tensor | None = None,
         block_tables: list[list[int]] | None = None,
         seq_lens: list[int] | None = None,
+        seq_token_ranges: list[tuple[int, int]] | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
-        """Forward pass.
+        """Self-attention forward pass with mixed prefill/decode and paged KV cache.
 
         Args:
-            hidden_states: (batch, seq_len, hidden_size)
-            positions: (batch, seq_len) or (seq_len,)
-            rope: rotary embedding module
-            kv_cache: optional (k_cache, v_cache) each (batch, num_kv_heads, max_len, head_dim)
-            cache_positions: positions to write into the cache
+            hidden_states: (batch, seq_len, hidden_size) or (1, total_tokens, hidden_size)
+            positions: (batch, seq_len) or (total_tokens,)
+            rope: RotaryEmbedding instance
+            kv_cache: (k_cache, v_cache) physical paged cache tensors
+            slot_mapping: (total_tokens,) slot mapping into physical cache
+            block_tables: per-sequence physical block tables
+            seq_lens: per-sequence active context lengths
+            seq_token_ranges: list of (start_idx, end_idx) per sequence in the batch
 
         Returns:
             output: (batch, seq_len, hidden_size)
             updated_kv_cache: (k_cache, v_cache)
         """
         batch, seq_len, _ = hidden_states.shape
+        total_tokens = batch * seq_len
 
         q = self.q_proj(hidden_states).view(batch, seq_len, self.num_heads, self.head_dim)
         k = self.k_proj(hidden_states).view(batch, seq_len, self.num_kv_heads, self.head_dim)
@@ -94,23 +99,47 @@ class LlamaAttention(nn.Module):
             # 1. Scatter all new tokens into physical paged cache
             reshape_and_cache(k, v, k_cache, v_cache, slot_mapping)
 
-            # 2. Compute attention per sequence with isolated historical KV contexts
-            if batch == 1:
-                gathered_k, gathered_v = gather_paged_kv(
-                    k_cache, v_cache, block_tables[0], seq_lens[0]
-                )
-                attn_output = reference_attention(q, gathered_k, gathered_v, scale=self.scale)
+            if seq_token_ranges is None:
+                if batch == 1:
+                    seq_token_ranges = [(0, seq_len)]
+                else:
+                    seq_token_ranges = [(i, i + 1) for i in range(batch)]
+
+            # Flatten q across batch if needed: (1, num_heads, total_tokens, head_dim)
+            if q.dim() == 4 and q.shape[0] > 1:
+                q_flat = q.transpose(1, 2).reshape(1, total_tokens, self.num_heads, self.head_dim)
+                q_flat = q_flat.transpose(1, 2)
             else:
-                attn_outputs: list[torch.Tensor] = []
-                for b in range(batch):
-                    gathered_k, gathered_v = gather_paged_kv(
-                        k_cache, v_cache, block_tables[b], seq_lens[b]
+                q_flat = q
+
+            attn_outputs: list[torch.Tensor] = []
+            for b, (start_idx, end_idx) in enumerate(seq_token_ranges):
+                chunk_len = end_idx - start_idx
+                q_b = q_flat[:, :, start_idx:end_idx, :]  # (1, num_heads, chunk_len, head_dim)
+                gathered_k, gathered_v = gather_paged_kv(
+                    k_cache, v_cache, block_tables[b], seq_lens[b]
+                )
+
+                if chunk_len == 1:
+                    attn_b = reference_attention(q_b, gathered_k, gathered_v, scale=self.scale)
+                else:
+                    # Chunked prefill: causal masking within chunk + past attention
+                    past_tokens = seq_lens[b] - chunk_len
+                    total_kv = seq_lens[b]
+                    q_indices = torch.arange(chunk_len, device=q.device).unsqueeze(1) + past_tokens
+                    k_indices = torch.arange(total_kv, device=q.device).unsqueeze(0)
+                    causal_mask = k_indices <= q_indices  # (chunk_len, total_kv)
+
+                    scores = torch.matmul(q_b, gathered_k.transpose(-2, -1)) * self.scale
+                    scores = scores.masked_fill(
+                        ~causal_mask.unsqueeze(0).unsqueeze(0), float("-inf")
                     )
-                    attn_b = reference_attention(
-                        q[b : b + 1], gathered_k, gathered_v, scale=self.scale
-                    )
-                    attn_outputs.append(attn_b)
-                attn_output = torch.cat(attn_outputs, dim=0)
+                    probs = torch.softmax(scores, dim=-1)
+                    attn_b = torch.matmul(probs, gathered_v)
+
+                attn_outputs.append(attn_b)
+
+            attn_output = torch.cat(attn_outputs, dim=2)
 
         elif kv_cache is not None:
             k_prev, v_prev = kv_cache
@@ -124,7 +153,7 @@ class LlamaAttention(nn.Module):
 
         # Reshape back
         attn_output = attn_output.transpose(1, 2).contiguous().view(batch, seq_len, -1)
-        output = self.o_proj(attn_output)
+        output: torch.Tensor = self.o_proj(attn_output)
 
         return output, kv_cache
 
@@ -162,6 +191,7 @@ class LlamaDecoderLayer(nn.Module):
         slot_mapping: torch.Tensor | None = None,
         block_tables: list[list[int]] | None = None,
         seq_lens: list[int] | None = None,
+        seq_token_ranges: list[tuple[int, int]] | None = None,
     ) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor] | None]:
         # Pre-norm attention
         residual = hidden_states
@@ -174,6 +204,7 @@ class LlamaDecoderLayer(nn.Module):
             slot_mapping=slot_mapping,
             block_tables=block_tables,
             seq_lens=seq_lens,
+            seq_token_ranges=seq_token_ranges,
         )
         hidden_states = residual + hidden_states
 
@@ -222,19 +253,21 @@ class LlamaForCausalLM(nn.Module):
         slot_mapping: torch.Tensor | None = None,
         block_tables: list[list[int]] | None = None,
         seq_lens: list[int] | None = None,
+        seq_token_ranges: list[tuple[int, int]] | None = None,
     ) -> tuple[torch.Tensor, list[tuple[torch.Tensor, torch.Tensor]]]:
-        """Forward pass with support for paged KV caches.
+        """Forward pass with support for paged KV caches and mixed batches.
 
         Args:
-            input_ids: (batch, seq_len) token ids
-            positions: (batch, seq_len) or (seq_len,) position indices
+            input_ids: (batch, seq_len) or (1, total_tokens) token ids
+            positions: (batch, seq_len) or (total_tokens,) position indices
             kv_caches: list of per-layer (k_cache, v_cache) physical tensors
-            slot_mapping: (num_tokens,) flat slot mappings for physical scatter
+            slot_mapping: (total_tokens,) flat slot mappings for physical scatter
             block_tables: per-sequence physical block table IDs
             seq_lens: per-sequence active total lengths
+            seq_token_ranges: per-sequence (start_idx, end_idx) in flattened batch
 
         Returns:
-            logits: (batch, seq_len, vocab_size)
+            logits: (batch, seq_len, vocab_size) or (1, total_tokens, vocab_size)
             new_kv_caches: updated per-layer KV caches
         """
         hidden_states = self.embed_tokens(input_ids)
@@ -250,11 +283,12 @@ class LlamaForCausalLM(nn.Module):
                 slot_mapping=slot_mapping,
                 block_tables=block_tables,
                 seq_lens=seq_lens,
+                seq_token_ranges=seq_token_ranges,
             )
             if new_kv is not None:
                 new_kv_caches.append(new_kv)
 
         hidden_states = self.norm(hidden_states)
-        logits = self.lm_head(hidden_states)
+        logits: torch.Tensor = self.lm_head(hidden_states)
 
         return logits, new_kv_caches

@@ -42,6 +42,12 @@ class Sequence:
     output_token_ids: list[int] = field(default_factory=list)
     status: SequenceStatus = SequenceStatus.WAITING
     logical_block_table: list[int] = field(default_factory=list)
+    num_computed_tokens: int = 0
+
+    @property
+    def is_prefill_done(self) -> bool:
+        """Whether all prompt tokens have been processed during chunked prefill."""
+        return self.num_computed_tokens >= len(self.prompt_token_ids)
 
     @property
     def num_prompt_tokens(self) -> int:

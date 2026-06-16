@@ -1,7 +1,8 @@
-"""Scheduler: iteration-level continuous batcher with preemption (swap and recompute)."""
+"""Scheduler: iteration-level continuous batcher with chunked prefill and mixed batches."""
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -15,8 +16,9 @@ class SchedulerOutputs:
     """What the scheduler tells the model runner to execute this step."""
 
     scheduled_seq_groups: list[SequenceGroup]
-    is_prefill: bool
-    num_batched_tokens: int
+    seq_chunk_lens: dict[int, int] = field(default_factory=dict)
+    is_prefill: bool = False
+    num_batched_tokens: int = 0
     blocks_to_swap_in: list[tuple[int, int]] = field(default_factory=list)
     blocks_to_swap_out: list[tuple[int, int]] = field(default_factory=list)
     blocks_to_copy: list[tuple[int, int]] = field(default_factory=list)
@@ -31,10 +33,10 @@ class SchedulerOutputs:
 
 
 class Scheduler:
-    """Continuous iteration-level batcher with preemption support.
+    """Continuous iteration-level batcher with chunked prefill & mixed batching (SARATHI-style).
 
     Maintains:
-      - waiting: new requests needing initial prefill (or recomputed prefill)
+      - waiting: requests needing chunked prefill
       - running: active requests in decode phase
       - swapped: preempted requests swapped out to CPU memory
     """
@@ -83,7 +85,7 @@ class Scheduler:
         self._swapped = deque(sg for sg in self._swapped if sg.request_id != request_id)
 
     def schedule(self) -> SchedulerOutputs:
-        """Run one iteration-level scheduling step with preemption."""
+        """Run one iteration-level scheduling step with chunked prefill and mixed batching."""
         # 1. Clean up finished sequence groups
         still_running: list[SequenceGroup] = []
         for sg in self._running:
@@ -110,41 +112,15 @@ class Scheduler:
                     blocks_to_swap_in=list(swap_in_map.items()),
                 )
 
-        # 3. Admit new sequences from waiting queue for prefill
-        if self._waiting and len(self._running) < self.config.max_num_seqs:
-            scheduled_prefills: list[SequenceGroup] = []
-            num_batched_tokens = 0
+        scheduled_seq_groups: list[SequenceGroup] = []
+        seq_chunk_lens: dict[int, int] = {}
+        blocks_to_swap_out: list[tuple[int, int]] = []
+        total_batched_tokens = 0
+        remaining_budget = self.config.max_num_batched_tokens
 
-            while self._waiting and len(self._running) < self.config.max_num_seqs:
-                sg = self._waiting[0]
-                seq = sg.first_seq
-                prompt_len = len(seq.all_token_ids)
-
-                if num_batched_tokens + prompt_len > self.config.max_num_batched_tokens:
-                    break
-
-                if not self.block_manager.can_allocate(seq):
-                    break
-
-                self._waiting.popleft()
-                self.block_manager.allocate(seq)
-                seq.status = SequenceStatus.RUNNING
-                self._running.append(sg)
-                scheduled_prefills.append(sg)
-                num_batched_tokens += prompt_len
-
-            if scheduled_prefills:
-                return SchedulerOutputs(
-                    scheduled_seq_groups=scheduled_prefills,
-                    is_prefill=True,
-                    num_batched_tokens=num_batched_tokens,
-                )
-
-        # 4. If running sequences exist, schedule batched decode (with preemption if OOM)
+        # 3. Schedule Running Decode Sequences (Priority 1 — No Starvation)
         if self._running:
-            blocks_to_swap_out: list[tuple[int, int]] = []
-
-            # Preemption loop: if any sequence cannot allocate next block, preempt victims (LIFO)
+            # Preemption loop: if any decode sequence cannot allocate next block, preempt victims
             i = 0
             while i < len(self._running):
                 seq = self._running[i].first_seq
@@ -165,35 +141,81 @@ class Scheduler:
                     else:
                         self.block_manager.free(victim_seq)
                         victim_seq.status = SequenceStatus.WAITING
+                        victim_seq.num_computed_tokens = 0
                         self._waiting.appendleft(victim_sg)
 
                     i = 0
                     continue
                 i += 1
 
-            scheduled_decodes: list[SequenceGroup] = []
-            num_tokens = 0
             for sg in self._running:
                 seq = sg.first_seq
-                if self.block_manager.can_allocate(seq):
+                if remaining_budget >= 1 and self.block_manager.can_allocate(seq):
                     self.block_manager.allocate(seq)
-                    scheduled_decodes.append(sg)
-                    num_tokens += 1
-                    if len(scheduled_decodes) >= self.config.max_num_seqs:
+                    scheduled_seq_groups.append(sg)
+                    seq_chunk_lens[seq.seq_id] = 1
+                    total_batched_tokens += 1
+                    remaining_budget -= 1
+                    if len(scheduled_seq_groups) >= self.config.max_num_seqs:
                         break
 
-            if scheduled_decodes or blocks_to_swap_out:
-                return SchedulerOutputs(
-                    scheduled_seq_groups=scheduled_decodes,
-                    is_prefill=False,
-                    num_batched_tokens=num_tokens,
-                    blocks_to_swap_out=blocks_to_swap_out,
-                )
+        # 4. Schedule Prefill Chunks for Waiting Sequences (Priority 2 — In-Situ Chunking)
+        while (
+            remaining_budget > 0 and self._waiting and len(self._running) < self.config.max_num_seqs
+        ):
+            sg = self._waiting[0]
+            seq = sg.first_seq
+            uncomputed = len(seq.all_token_ids) - seq.num_computed_tokens
+
+            if uncomputed <= 0:
+                self._waiting.popleft()
+                self._running.append(sg)
+                continue
+
+            chunk_len = min(remaining_budget, uncomputed)
+
+            # Check if block allocator can satisfy target tokens
+            target_tokens = seq.num_computed_tokens + chunk_len
+            needed_blocks = max(1, math.ceil(target_tokens / self.block_manager.block_size))
+            table = self.block_manager.get_block_table(seq)
+            already_have = table.num_blocks if table else 0
+            needed_new = needed_blocks - already_have
+
+            if needed_new <= self.block_manager.num_free_blocks:
+                # Extend allocation to cover chunk
+                if table is None:
+                    table = self.block_manager.allocate(seq)
+                while table.num_blocks < needed_blocks:
+                    block_id = self.block_manager._free_blocks.pop()
+                    self.block_manager._blocks[block_id].ref_count = 1
+                    table.append_block(block_id)
+
+                scheduled_seq_groups.append(sg)
+                seq_chunk_lens[seq.seq_id] = chunk_len
+                total_batched_tokens += chunk_len
+                remaining_budget -= chunk_len
+
+                if seq.num_computed_tokens + chunk_len >= len(seq.all_token_ids):
+                    # Prefill complete: transition sequence to running
+                    self._waiting.popleft()
+                    self._running.append(sg)
+                    seq.status = SequenceStatus.RUNNING
+                else:
+                    # Intermediate chunk: remains in waiting queue for next iteration
+                    break
+            else:
+                break
+
+        is_prefill = any(
+            seq_chunk_lens.get(sg.first_seq.seq_id, 0) > 1 for sg in scheduled_seq_groups
+        )
 
         return SchedulerOutputs(
-            scheduled_seq_groups=[],
-            is_prefill=True,
-            num_batched_tokens=0,
+            scheduled_seq_groups=scheduled_seq_groups,
+            seq_chunk_lens=seq_chunk_lens,
+            is_prefill=is_prefill,
+            num_batched_tokens=total_batched_tokens,
+            blocks_to_swap_out=blocks_to_swap_out,
         )
 
     def has_unfinished_seqs(self) -> bool:

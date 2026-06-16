@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] — 2026-07-01
+
+### Added
+- **Chunked Prefill Engine**: SARATHI-style bounded prompt chunking co-scheduled with active decode sequences
+- **Mixed-Batch Forward Pass**: Unified attention kernel executing causal prompt chunks and paged historical decode in one step
+- **Zero Decode Starvation**: Decode-priority token budgeting guaranteeing no TPOT tail latency spikes from long prompts
+- **ADR-0003**: Quantitative analysis comparing in-situ chunking vs disaggregated prefill-decode architectures
+- **Chunked Prefill Tests**: Multi-iteration chunk progress, starvation-free co-scheduling, and byte-for-byte output parity
+
 ## [0.5.0] — 2026-06-24
 
 ### Added
