@@ -17,10 +17,10 @@ nanoserve is not a wrapper. Every component — the block allocator, the schedul
 | **Continuous batching** | ✅ | Iteration-level scheduling, zero padding, dynamic admission (Week 4) |
 | **Preemption** | ✅ | Recompute + CPU host memory swap, zero OOM guarantee (Week 5) |
 | **Chunked prefill** | ✅ | Mixed prefill/decode batches, zero decode starvation (Week 6) |
+| **Prefix caching** | ✅ | Content-addressed, hash-chained, LRU eviction (Week 7) |
 | **OpenAI-compatible API** | ✅ | `/v1/chat/completions`, `/v1/completions`, SSE streaming |
 | **Scheduler** | ✅ | FCFS admission with block-budget enforcement |
 | **Prometheus metrics** | ✅ | TTFT/TPOT histograms, KV utilization, queue gauges |
-| **Prefix caching** | 🔲 | Content-addressed, hash-chained (Week 7) |
 | **Triton paged attention** | 🔲 | Custom decode kernel (Week 8) |
 | **Speculative decoding** | 🔲 | N-gram + draft model (Week 9) |
 

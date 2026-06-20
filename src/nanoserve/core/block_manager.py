@@ -1,4 +1,4 @@
-"""Block manager: physical KV cache allocation, refcounting, Copy-On-Write (COW), and CPU swap."""
+"""Block manager: physical KV cache allocation, refcounting, COW, CPU swap, and prefix caching."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from nanoserve.config import CacheConfig, ModelConfig
 from nanoserve.core.block_table import BlockTable
+from nanoserve.core.prefix_cache import PrefixCache, compute_block_hash
 from nanoserve.core.sequence import Sequence
 
 
@@ -26,21 +27,24 @@ class PhysicalBlock:
 
 @dataclass
 class BlockManager:
-    """Manages physical KV cache block allocation, refcounts, COW, and CPU swap pools.
+    """Manages physical KV cache block allocation, refcounts, COW, CPU swap, and prefix caching.
 
-    Maintains dual pools:
+    Maintains:
       - GPU physical block pool for active decoding/prefilling
       - CPU physical block pool for swapped/preempted sequences
+      - PrefixCache for content-addressed prefix KV reuse and LRU eviction
     """
 
     num_blocks: int
     block_size: int
     num_cpu_blocks: int = 256
+    enable_prefix_caching: bool = True
     _blocks: list[PhysicalBlock] = field(default_factory=list)
     _free_blocks: list[int] = field(default_factory=list)
     _cpu_blocks: list[PhysicalBlock] = field(default_factory=list)
     _cpu_free_blocks: list[int] = field(default_factory=list)
     _seq_block_tables: dict[int, BlockTable] = field(default_factory=dict)
+    prefix_cache: PrefixCache = field(default_factory=PrefixCache)
 
     def __post_init__(self) -> None:
         # Initialize GPU physical blocks and free list (LIFO order)
@@ -54,6 +58,7 @@ class BlockManager:
             PhysicalBlock(block_id=i, ref_count=0, device="cpu") for i in range(self.num_cpu_blocks)
         ]
         self._cpu_free_blocks = list(range(self.num_cpu_blocks - 1, -1, -1))
+        self.prefix_cache = PrefixCache()
 
     @classmethod
     def from_config(cls, _model: ModelConfig, cache: CacheConfig) -> BlockManager:
@@ -67,12 +72,17 @@ class BlockManager:
 
     @property
     def num_free_blocks(self) -> int:
-        """Number of unallocated GPU physical blocks."""
+        """Number of directly unallocated GPU blocks."""
         return len(self._free_blocks)
 
     @property
+    def num_total_available_blocks(self) -> int:
+        """Number of free blocks plus evictable LRU cached prefix blocks."""
+        return len(self._free_blocks) + self.prefix_cache.num_unreferenced_blocks
+
+    @property
     def num_used_blocks(self) -> int:
-        """Number of GPU physical blocks currently referenced by at least one sequence."""
+        """Number of GPU physical blocks currently referenced by active sequences."""
         return self.num_blocks - self.num_free_blocks
 
     @property
@@ -82,7 +92,7 @@ class BlockManager:
 
     @property
     def num_cpu_used_blocks(self) -> int:
-        """Number of CPU physical blocks currently referenced by at least one sequence."""
+        """Number of CPU physical blocks currently referenced by sequences."""
         return self.num_cpu_blocks - self.num_cpu_free_blocks
 
     @property
@@ -95,14 +105,14 @@ class BlockManager:
         return self._blocks[block_id].ref_count
 
     def can_allocate(self, seq: Sequence) -> bool:
-        """Check whether we have enough free GPU blocks to allocate/extend this sequence."""
+        """Check whether we have enough free blocks (including LRU evictions) to allocate."""
         needed = self._blocks_needed(seq.num_total_tokens)
         current = self._seq_block_tables.get(seq.seq_id)
         already_have = current.num_blocks if current else 0
-        return (needed - already_have) <= self.num_free_blocks
+        return (needed - already_have) <= self.num_total_available_blocks
 
     def allocate(self, seq: Sequence) -> BlockTable:
-        """Allocate GPU blocks for a sequence (or extend its existing allocation)."""
+        """Allocate GPU blocks for a sequence with prefix cache matching and LRU eviction."""
         needed = self._blocks_needed(seq.num_total_tokens)
         table = self._seq_block_tables.get(seq.seq_id)
 
@@ -110,18 +120,70 @@ class BlockManager:
             table = BlockTable()
             self._seq_block_tables[seq.seq_id] = table
 
+            # Prefix cache lookup for new requests
+            if self.enable_prefix_caching and seq.prompt_token_ids:
+                matched_blocks, _ = self.prefix_cache.match_prefix(
+                    seq.prompt_token_ids, self.block_size
+                )
+                for block_id in matched_blocks:
+                    self._blocks[block_id].ref_count += 1
+                    self.prefix_cache.touch(block_id)
+                    table.append_block(block_id)
+
+                if matched_blocks:
+                    seq.num_computed_tokens = len(matched_blocks) * self.block_size
+
         while table.num_blocks < needed:
             if not self._free_blocks:
-                msg = (
-                    f"Block allocator OOM: need {needed - table.num_blocks} more blocks, "
-                    f"0 free out of {self.num_blocks} total"
-                )
-                raise RuntimeError(msg)
+                # Evict from LRU prefix cache
+                evicted = self.prefix_cache.evict_lru()
+                if evicted is not None:
+                    self._free_blocks.append(evicted)
+                else:
+                    msg = (
+                        f"Block allocator OOM: need {needed - table.num_blocks} more blocks, "
+                        f"0 free out of {self.num_blocks} total"
+                    )
+                    raise RuntimeError(msg)
+
             block_id = self._free_blocks.pop()
             self._blocks[block_id].ref_count = 1
+            self.prefix_cache.invalidate_block(block_id)
             table.append_block(block_id)
 
         return table
+
+    def cache_sequence_blocks(self, seq: Sequence) -> int:
+        """Register completed prompt prefix blocks of a sequence into the PrefixCache.
+
+        Returns:
+            Number of newly cached blocks.
+        """
+        if not self.enable_prefix_caching or not seq.prompt_token_ids:
+            return 0
+
+        table = self._seq_block_tables.get(seq.seq_id)
+        if table is None:
+            return 0
+
+        num_full_blocks = len(seq.prompt_token_ids) // self.block_size
+        cached_count = 0
+        parent_hash: int | None = None
+
+        for i in range(num_full_blocks):
+            block_tokens = tuple(
+                seq.prompt_token_ids[i * self.block_size : (i + 1) * self.block_size]
+            )
+            current_hash = compute_block_hash(parent_hash, block_tokens)
+            block_id = table.get_physical_block(i)
+
+            if not self.prefix_cache.has_block(block_id):
+                self.prefix_cache.cache_block(block_id, current_hash, block_tokens)
+                cached_count += 1
+
+            parent_hash = current_hash
+
+        return cached_count
 
     def fork(self, parent_seq: Sequence, child_seq: Sequence) -> BlockTable:
         """Fork a child sequence from a parent sequence with zero-copy block sharing."""
@@ -133,6 +195,8 @@ class BlockManager:
         child_table = parent_table.copy()
         for block_id in child_table.get_all_physical_blocks():
             self._blocks[block_id].ref_count += 1
+            if self.enable_prefix_caching:
+                self.prefix_cache.touch(block_id)
 
         self._seq_block_tables[child_seq.seq_id] = child_table
         return child_table
@@ -149,12 +213,17 @@ class BlockManager:
             return None
 
         if not self._free_blocks:
-            msg = "Block allocator OOM during Copy-On-Write"
-            raise RuntimeError(msg)
+            evicted = self.prefix_cache.evict_lru()
+            if evicted is not None:
+                self._free_blocks.append(evicted)
+            else:
+                msg = "Block allocator OOM during Copy-On-Write"
+                raise RuntimeError(msg)
 
         new_block_id = self._free_blocks.pop()
         self._blocks[new_block_id].ref_count = 1
         self._blocks[old_block_id].ref_count -= 1
+        self.prefix_cache.invalidate_block(new_block_id)
         table.set_physical_block(logical_block_idx, new_block_id)
         return old_block_id, new_block_id
 
@@ -166,11 +235,7 @@ class BlockManager:
         return len(self._cpu_free_blocks) >= table.num_blocks
 
     def swap_out(self, seq: Sequence) -> dict[int, int]:
-        """Swap sequence physical blocks from GPU memory pool to CPU memory pool.
-
-        Returns:
-            Mapping from GPU physical block ID to assigned CPU physical block ID.
-        """
+        """Swap sequence physical blocks from GPU memory pool to CPU memory pool."""
         table = self._seq_block_tables.get(seq.seq_id)
         if table is None:
             return {}
@@ -186,7 +251,11 @@ class BlockManager:
             # Release GPU block
             self._blocks[gpu_block_id].ref_count -= 1
             if self._blocks[gpu_block_id].ref_count == 0:
-                self._free_blocks.append(gpu_block_id)
+                if self.enable_prefix_caching and self.prefix_cache.has_block(gpu_block_id):
+                    self.prefix_cache.mark_unreferenced(gpu_block_id)
+                else:
+                    self.prefix_cache.invalidate_block(gpu_block_id)
+                    self._free_blocks.append(gpu_block_id)
 
             table.set_physical_block(logical_idx, cpu_block_id)
             mapping[gpu_block_id] = cpu_block_id
@@ -201,11 +270,7 @@ class BlockManager:
         return len(self._free_blocks) >= table.num_blocks
 
     def swap_in(self, seq: Sequence) -> dict[int, int]:
-        """Swap sequence physical blocks from CPU memory pool to GPU memory pool.
-
-        Returns:
-            Mapping from CPU physical block ID to assigned GPU physical block ID.
-        """
+        """Swap sequence physical blocks from CPU memory pool to GPU memory pool."""
         table = self._seq_block_tables.get(seq.seq_id)
         if table is None:
             return {}
@@ -213,10 +278,16 @@ class BlockManager:
         mapping: dict[int, int] = {}
         for logical_idx, cpu_block_id in enumerate(table.get_all_physical_blocks()):
             if not self._free_blocks:
-                msg = "GPU Block allocator OOM during swap_in"
-                raise RuntimeError(msg)
+                evicted = self.prefix_cache.evict_lru()
+                if evicted is not None:
+                    self._free_blocks.append(evicted)
+                else:
+                    msg = "GPU Block allocator OOM during swap_in"
+                    raise RuntimeError(msg)
+
             gpu_block_id = self._free_blocks.pop()
             self._blocks[gpu_block_id].ref_count = 1
+            self.prefix_cache.invalidate_block(gpu_block_id)
 
             # Release CPU block
             self._cpu_blocks[cpu_block_id].ref_count -= 1
@@ -229,14 +300,18 @@ class BlockManager:
         return mapping
 
     def free(self, seq: Sequence) -> None:
-        """Free all blocks held by a sequence (from GPU or CPU pools)."""
+        """Free all blocks held by a sequence with prefix cache retention."""
         table = self._seq_block_tables.pop(seq.seq_id, None)
         if table is not None:
             for block_id in reversed(table.get_all_physical_blocks()):
                 if block_id < len(self._blocks) and self._blocks[block_id].ref_count > 0:
                     self._blocks[block_id].ref_count -= 1
                     if self._blocks[block_id].ref_count == 0:
-                        self._free_blocks.append(block_id)
+                        if self.enable_prefix_caching and self.prefix_cache.has_block(block_id):
+                            self.prefix_cache.mark_unreferenced(block_id)
+                        else:
+                            self.prefix_cache.invalidate_block(block_id)
+                            self._free_blocks.append(block_id)
                 elif block_id < len(self._cpu_blocks) and self._cpu_blocks[block_id].ref_count > 0:
                     self._cpu_blocks[block_id].ref_count -= 1
                     if self._cpu_blocks[block_id].ref_count == 0:

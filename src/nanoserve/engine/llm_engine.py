@@ -275,6 +275,8 @@ class LLMEngine:
                 if seq.num_computed_tokens < len(seq.all_token_ids):
                     # Intermediate prefill chunk: don't sample yet
                     continue
+                # Prefill completed on this step: cache prefix blocks
+                self.block_manager.cache_sequence_blocks(seq)
 
             # Prefill completed on this step or in decode phase: sample next token
             sampled_tokens = self.sampler.sample(

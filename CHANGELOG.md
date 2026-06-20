@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.7.0] — 2026-07-08
+
+### Added
+- **Content-Addressed Prefix Caching**: Hash-chained block lookup with zero-compute prompt prefix reuse
+- **LRU Block Eviction Pool**: Unreferenced cached physical blocks retained in LRU pool until evicted by memory demand
+- **Allocator Prefix Integration**: `BlockManager.allocate` directly matches and attaches longest cached prefix blocks
+- **Copy-On-Write Immutability**: Cached prefix blocks guaranteed immutable across sequence forks and branching
+- **Prefix Cache Tests**: System prompt sharing (100% TTFT acceleration), LRU eviction ordering, and output parity
+
 ## [0.6.0] — 2026-07-01
 
 ### Added

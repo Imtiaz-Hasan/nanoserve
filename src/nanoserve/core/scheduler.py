@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections import deque
 from dataclasses import dataclass, field
 
@@ -165,45 +164,32 @@ class Scheduler:
         ):
             sg = self._waiting[0]
             seq = sg.first_seq
-            uncomputed = len(seq.all_token_ids) - seq.num_computed_tokens
 
+            if not self.block_manager.can_allocate(seq):
+                break
+            self.block_manager.allocate(seq)
+
+            uncomputed = len(seq.all_token_ids) - seq.num_computed_tokens
             if uncomputed <= 0:
                 self._waiting.popleft()
                 self._running.append(sg)
+                seq.status = SequenceStatus.RUNNING
                 continue
 
             chunk_len = min(remaining_budget, uncomputed)
 
-            # Check if block allocator can satisfy target tokens
-            target_tokens = seq.num_computed_tokens + chunk_len
-            needed_blocks = max(1, math.ceil(target_tokens / self.block_manager.block_size))
-            table = self.block_manager.get_block_table(seq)
-            already_have = table.num_blocks if table else 0
-            needed_new = needed_blocks - already_have
+            scheduled_seq_groups.append(sg)
+            seq_chunk_lens[seq.seq_id] = chunk_len
+            total_batched_tokens += chunk_len
+            remaining_budget -= chunk_len
 
-            if needed_new <= self.block_manager.num_free_blocks:
-                # Extend allocation to cover chunk
-                if table is None:
-                    table = self.block_manager.allocate(seq)
-                while table.num_blocks < needed_blocks:
-                    block_id = self.block_manager._free_blocks.pop()
-                    self.block_manager._blocks[block_id].ref_count = 1
-                    table.append_block(block_id)
-
-                scheduled_seq_groups.append(sg)
-                seq_chunk_lens[seq.seq_id] = chunk_len
-                total_batched_tokens += chunk_len
-                remaining_budget -= chunk_len
-
-                if seq.num_computed_tokens + chunk_len >= len(seq.all_token_ids):
-                    # Prefill complete: transition sequence to running
-                    self._waiting.popleft()
-                    self._running.append(sg)
-                    seq.status = SequenceStatus.RUNNING
-                else:
-                    # Intermediate chunk: remains in waiting queue for next iteration
-                    break
+            if seq.num_computed_tokens + chunk_len >= len(seq.all_token_ids):
+                # Prefill complete: transition sequence to running
+                self._waiting.popleft()
+                self._running.append(sg)
+                seq.status = SequenceStatus.RUNNING
             else:
+                # Intermediate chunk: remains in waiting queue for next iteration
                 break
 
         is_prefill = any(
