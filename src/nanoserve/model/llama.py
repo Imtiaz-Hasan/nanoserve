@@ -10,6 +10,7 @@ import torch.nn.functional as F  # noqa: N812
 from torch import nn
 
 from nanoserve.config import ModelConfig
+from nanoserve.kernels.paged_attention import paged_attention_decode
 from nanoserve.kernels.reshape_cache import gather_paged_kv, reshape_and_cache
 from nanoserve.model.attention import reference_attention
 from nanoserve.model.rope import RotaryEmbedding
@@ -121,7 +122,9 @@ class LlamaAttention(nn.Module):
                 )
 
                 if chunk_len == 1:
-                    attn_b = reference_attention(q_b, gathered_k, gathered_v, scale=self.scale)
+                    attn_b = paged_attention_decode(
+                        q_b, k_cache, v_cache, [block_tables[b]], [seq_lens[b]], scale=self.scale
+                    )
                 else:
                     # Chunked prefill: causal masking within chunk + past attention
                     past_tokens = seq_lens[b] - chunk_len

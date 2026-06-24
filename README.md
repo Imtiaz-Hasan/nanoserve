@@ -18,10 +18,10 @@ nanoserve is not a wrapper. Every component — the block allocator, the schedul
 | **Preemption** | ✅ | Recompute + CPU host memory swap, zero OOM guarantee (Week 5) |
 | **Chunked prefill** | ✅ | Mixed prefill/decode batches, zero decode starvation (Week 6) |
 | **Prefix caching** | ✅ | Content-addressed, hash-chained, LRU eviction (Week 7) |
+| **Triton paged attention** | ✅ | Fused decode kernel with online softmax & dual dispatch (Week 8) |
 | **OpenAI-compatible API** | ✅ | `/v1/chat/completions`, `/v1/completions`, SSE streaming |
 | **Scheduler** | ✅ | FCFS admission with block-budget enforcement |
 | **Prometheus metrics** | ✅ | TTFT/TPOT histograms, KV utilization, queue gauges |
-| **Triton paged attention** | 🔲 | Custom decode kernel (Week 8) |
 | **Speculative decoding** | 🔲 | N-gram + draft model (Week 9) |
 
 ---

@@ -35,11 +35,13 @@ def reference_attention(
         key = key.repeat_interleave(repeat_factor, dim=1)
         value = value.repeat_interleave(repeat_factor, dim=1)
 
+    is_causal = (query.shape[2] == key.shape[2]) and (query.shape[2] > 1)
+
     return F.scaled_dot_product_attention(
         query,
         key,
         value,
         attn_mask=None,
-        is_causal=True,
+        is_causal=is_causal,
         scale=scale,
     )

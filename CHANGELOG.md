@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] — 2026-07-15
+
+### Added
+- **Triton Paged Attention Kernel**: Direct physical block table indexing with single-pass online softmax
+- **Dual-Path Dynamic Dispatch**: Seamless execution across Triton GPU kernels and optimized PyTorch CPU fallbacks
+- **GQA Topology Support**: Native Grouped-Query Attention head expansion inside decode kernel
+- **Numerical Parity Suite**: $10^{-4}$ tolerance validation against reference scaled dot-product attention
+- **Paged Attention Benchmark**: Latency and HBM memory bandwidth utilization measurement harness
+
 ## [0.7.0] — 2026-07-08
 
 ### Added
