@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.9.0] — 2026-07-22
+
+### Added
+- **N-Gram Prompt-Lookup Speculation**: Zero-overhead candidate generation scanning prompt history for recurrent patterns
+- **Draft Model Speculative Proposer**: Multi-token candidate generation via lightweight draft language model
+- **Parallel Speculative Verifier**: Single target forward pass verifying $K+1$ candidate positions with bonus token emission
+- **KV Cache Rollback Mechanism**: Automatic cache slot and token rollback on candidate mismatch
+- **Speculative Engine Orchestrator**: High-level engine managing proposal, verification, and acceptance rate ($\alpha$) metrics
+- **Speculative Tests**: 100% token-for-token mathematical equivalence, speedup validation, and rollback safety
+
 ## [0.8.0] — 2026-07-15
 
 ### Added

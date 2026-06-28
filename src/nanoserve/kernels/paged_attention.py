@@ -21,7 +21,7 @@ except ImportError:
 
 if HAS_TRITON:
 
-    @triton.jit  # type: ignore[misc,untyped-decorator]
+    @triton.jit  # type: ignore[untyped-decorator]
     def _paged_attention_decode_kernel(
         out_ptr: Any,
         q_ptr: Any,

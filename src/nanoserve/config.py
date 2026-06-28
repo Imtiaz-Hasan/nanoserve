@@ -69,12 +69,24 @@ class SchedulerConfig:
 
 
 @dataclass(frozen=True)
+class SpeculativeConfig:
+    """Speculative decoding configuration."""
+
+    enabled: bool = False
+    num_speculative_tokens: int = 4  # K draft candidate tokens
+    proposer_type: str = "ngram"  # "ngram" or "draft_model"
+    ngram_size: int = 3  # N-gram context size
+    draft_model_path: str | None = None
+
+
+@dataclass(frozen=True)
 class EngineConfig:
-    """Top-level configuration composing model, cache, and scheduler configs."""
+    """Top-level configuration composing model, cache, scheduler, and speculative configs."""
 
     model: ModelConfig = field(default_factory=ModelConfig)
     cache: CacheConfig = field(default_factory=CacheConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    speculative: SpeculativeConfig = field(default_factory=SpeculativeConfig)
     device: str = "cpu"
     seed: int = 42
 
