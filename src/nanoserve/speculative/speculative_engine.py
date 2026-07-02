@@ -5,7 +5,8 @@ from __future__ import annotations
 import torch
 
 from nanoserve.config import EngineConfig
-from nanoserve.engine.llm_engine import LLMEngine, RequestOutput
+from nanoserve.engine.llm_engine import LLMEngine
+from nanoserve.engine.output import RequestOutput
 from nanoserve.sampling.params import SamplingParams
 from nanoserve.speculative.proposer import NgramProposer, SpeculativeProposer
 from nanoserve.speculative.verifier import SpeculativeVerifier

@@ -295,3 +295,22 @@ class LlamaForCausalLM(nn.Module):
         logits: torch.Tensor = self.lm_head(hidden_states)
 
         return logits, new_kv_caches
+
+    @classmethod
+    def from_pretrained(
+        cls,
+        model_name_or_path: str,
+        dtype: str = "float32",
+        device: str = "cpu",
+    ) -> LlamaForCausalLM:
+        """Instantiate LlamaForCausalLM and load weights from SafeTensors checkpoint."""
+        from nanoserve.model.weight_loader import (  # noqa: PLC0415
+            load_model_config,
+            load_safetensors_weights,
+        )
+
+        config = load_model_config(model_name_or_path)
+        torch_dtype = getattr(torch, dtype, torch.float32)
+        model = cls(config).to(device=device, dtype=torch_dtype)
+        load_safetensors_weights(model, model_name_or_path, device=device, dtype=torch_dtype)
+        return model

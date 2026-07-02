@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.10.0] — 2026-07-29
+
+### Added
+- **SafeTensors Weight Loader**: Zero-copy single-file and sharded checkpoint loading from local disk and HuggingFace Hub
+- **Parameter Name Normalization**: Maps HuggingFace model architectures (LLaMA, Mistral, Qwen) directly to nanoserve tensors
+- **HuggingFace AutoTokenizer Integration**: High-throughput subword tokenization with fallback to byte-level tokenizer
+- **`LlamaForCausalLM.from_pretrained`**: End-to-end checkpoint instantiation from `config.json` and SafeTensors files
+- **Golden Parity Testing**: Mathematical forward-pass numerical verification against PyTorch reference implementation
+
 ## [0.9.0] — 2026-07-22
 
 ### Added

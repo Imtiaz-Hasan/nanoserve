@@ -17,6 +17,7 @@ from nanoserve.engine.output import CompletionOutput, RequestOutput
 from nanoserve.kernels.reshape_cache import swap_blocks
 from nanoserve.model.llama import LlamaForCausalLM
 from nanoserve.model.loader import load_model
+from nanoserve.model.tokenizer import TokenizerProtocol, get_tokenizer
 from nanoserve.sampling.params import SamplingParams
 from nanoserve.sampling.sampler import Sampler
 from nanoserve.sampling.stop import StopChecker
@@ -67,7 +68,9 @@ class LLMEngine:
         self.model: LlamaForCausalLM = load_model(config.model, config.device)
 
         # Tokenizer
-        self.tokenizer = SimpleTokenizer(vocab_size=config.model.vocab_size)
+        self.tokenizer: TokenizerProtocol = get_tokenizer(
+            config.model.model_name_or_path, vocab_size=config.model.vocab_size
+        )
 
         # Block manager and scheduler
         self.num_blocks = config.cache.num_gpu_blocks or 256

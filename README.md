@@ -20,10 +20,11 @@ nanoserve is not a wrapper. Every component — the block allocator, the schedul
 | **Prefix caching** | ✅ | Content-addressed, hash-chained, LRU eviction (Week 7) |
 | **Triton paged attention** | ✅ | Fused decode kernel with online softmax & dual dispatch (Week 8) |
 | **Speculative decoding** | ✅ | N-gram prompt-lookup + draft model with verification & rollback (Week 9) |
+| **Model loading & weights** | ✅ | SafeTensors + HuggingFace loader with golden parity tests (Week 10) |
 | **OpenAI-compatible API** | ✅ | `/v1/chat/completions`, `/v1/completions`, SSE streaming |
 | **Scheduler** | ✅ | FCFS admission with block-budget enforcement |
 | **Prometheus metrics** | ✅ | TTFT/TPOT histograms, KV utilization, queue gauges |
-| **Model loading & weights** | 🔲 | SafeTensors + HuggingFace loader (Week 10) |
+| **Production benchmark** | 🔲 | Concurrency sweeps, TTFT/TPOT percentiles, ShareGPT workload (Week 11) |
 
 ---
 

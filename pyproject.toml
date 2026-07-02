@@ -102,6 +102,7 @@ module = [
     "numpy.*",
     "safetensors.*",
     "huggingface_hub.*",
+    "transformers.*",
     "triton.*",
     "prometheus_client.*",
 ]
