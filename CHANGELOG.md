@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] — 2026-08-05
+
+### Added
+- **Async Streaming Benchmark Client**: High-precision TTFT, TPOT, and latency percentile measurement over SSE
+- **Traffic Generation Models**: Supports both burst concurrency and Poisson arrival processes ($\lambda$ req/s)
+- **In-Process Throughput Benchmark**: Measures raw engine scheduling and generation speed without network stack overhead
+- **Automated Report Generator**: Generates publication-ready Markdown tables, JSON metrics, and LaTeX tables
+- **Benchmark Test Suite**: Unit and integration testing for statistical percentiles, synthetic workloads, and report export
+
 ## [0.10.0] — 2026-07-29
 
 ### Added
