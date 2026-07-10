@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.0.0] — 2026-08-12
+
+### Added
+- **Production GA Milestone (v1.0.0)**: Complete 12-week feature roadmap achieved
+- **Architecture Whitepaper**: Complete systems and mathematical design document (`docs/architecture/whitepaper.md`)
+- **ADR-0004**: Architectural Decision Record on Speculative Decoding Proposer Strategy (`docs/adr/0004-speculative-decoding-proposer-strategy.md`)
+- **Operator Runbooks**: Diagnostic troubleshooting guide (`docs/operations/troubleshooting.md`) and deployment guide (`docs/operations/deployment.md`)
+- **100% Test Coverage**: 115 passing unit, integration, property, fuzz, and correctness golden tests
+
 ## [0.11.0] — 2026-08-05
 
 ### Added
