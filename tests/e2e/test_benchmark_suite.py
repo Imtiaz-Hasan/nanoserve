@@ -1,8 +1,8 @@
 """Tests for the production benchmark suite and statistical report generator."""
 
 from pathlib import Path
-import pytest
 
+import pytest
 from benchmarks.bench_throughput import run_throughput_benchmark
 from benchmarks.report_generator import (
     BenchmarkResult,

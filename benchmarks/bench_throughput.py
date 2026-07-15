@@ -134,7 +134,9 @@ def main() -> None:
         device=args.device,
     )
 
-    print(f"\nThroughput: {res.token_throughput_tok_per_s:.2f} tok/s ({res.request_throughput_req_per_s:.2f} req/s)")
+    tput_tok = res.token_throughput_tok_per_s
+    tput_req = res.request_throughput_req_per_s
+    print(f"\nThroughput: {tput_tok:.2f} tok/s ({tput_req:.2f} req/s)")
     print(f"TTFT P50: {res.ttft_ms['p50']:.2f} ms | P99: {res.ttft_ms['p99']:.2f} ms")
     print(f"TPOT P50: {res.tpot_ms['p50']:.2f} ms | P99: {res.tpot_ms['p99']:.2f} ms")
 

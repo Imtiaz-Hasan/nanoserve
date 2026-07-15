@@ -23,6 +23,8 @@ nanoserve is not a wrapper. Every component — the block allocator, the schedul
 | **Model loading & weights** | ✅ | SafeTensors + HuggingFace loader with golden parity tests (Week 10) |
 | **Production benchmark** | ✅ | Concurrency sweeps, TTFT/TPOT percentiles, ShareGPT workload (Week 11) |
 | **Enterprise documentation** | ✅ | Architecture whitepaper, operator guides, ADR index (Week 12) |
+| **Quantized KV Cache** | ✅ | INT8/FP8 block quantization with 2x memory reduction (Week 13) |
+| **Constrained decoding** | ✅ | JSON Schema & regex logit biasing with prefix verification (Week 13) |
 | **OpenAI-compatible API** | ✅ | `/v1/chat/completions`, `/v1/completions`, SSE streaming |
 | **Scheduler** | ✅ | FCFS admission with block-budget enforcement |
 | **Prometheus metrics** | ✅ | TTFT/TPOT histograms, KV utilization, queue gauges |

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -58,20 +58,31 @@ def compute_percentiles(values: list[float]) -> dict[str, float]:
 
 def generate_markdown_report(results: list[BenchmarkResult]) -> str:
     """Generate Markdown summary table from benchmark results."""
+    header_md = (
+        "| Benchmark | Reqs | In / Out Tokens | Throughput (tok/s) | "
+        "TTFT P50 (ms) | TTFT P99 (ms) | TPOT P50 (ms) | TPOT P99 (ms) | "
+        "E2E P50 (ms) | E2E P99 (ms) |"
+    )
     lines = [
         "# nanoserve Serving Performance Benchmark Report",
         "",
-        "| Benchmark | Reqs | In / Out Tokens | Throughput (tok/s) | TTFT P50 (ms) | TTFT P99 (ms) | TPOT P50 (ms) | TPOT P99 (ms) | E2E P50 (ms) | E2E P99 (ms) |",
+        header_md,
         "| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |",
     ]
 
     for r in results:
+        tput = f"{r.token_throughput_tok_per_s:.1f}"
+        ttft_50 = f"{r.ttft_ms.get('p50', 0.0):.1f}"
+        ttft_99 = f"{r.ttft_ms.get('p99', 0.0):.1f}"
+        tpot_50 = f"{r.tpot_ms.get('p50', 0.0):.1f}"
+        tpot_99 = f"{r.tpot_ms.get('p99', 0.0):.1f}"
+        lat_50 = f"{r.latency_ms.get('p50', 0.0):.1f}"
+        lat_99 = f"{r.latency_ms.get('p99', 0.0):.1f}"
+        toks = f"{r.total_input_tokens} / {r.total_output_tokens}"
         lines.append(
-            f"| {r.benchmark_name} | {r.num_requests} | {r.total_input_tokens} / {r.total_output_tokens} | "
-            f"{r.token_throughput_tok_per_s:.1f} | "
-            f"{r.ttft_ms.get('p50', 0.0):.1f} | {r.ttft_ms.get('p99', 0.0):.1f} | "
-            f"{r.tpot_ms.get('p50', 0.0):.1f} | {r.tpot_ms.get('p99', 0.0):.1f} | "
-            f"{r.latency_ms.get('p50', 0.0):.1f} | {r.latency_ms.get('p99', 0.0):.1f} |"
+            f"| {r.benchmark_name} | {r.num_requests} | {toks} | "
+            f"{tput} | {ttft_50} | {ttft_99} | {tpot_50} | {tpot_99} | "
+            f"{lat_50} | {lat_99} |"
         )
 
     return "\n".join(lines)
@@ -79,13 +90,18 @@ def generate_markdown_report(results: list[BenchmarkResult]) -> str:
 
 def generate_latex_table(results: list[BenchmarkResult]) -> str:
     """Generate publication-ready LaTeX table."""
+    tex_header = (
+        r"\textbf{Workload} & \textbf{Throughput (tok/s)} & \textbf{TTFT P50 (ms)} & "
+        r"\textbf{TTFT P99 (ms)} & \textbf{TPOT P50 (ms)} & \textbf{TPOT P99 (ms)} & "
+        r"\textbf{Latency P99 (ms)} \\"
+    )
     lines = [
         r"\begin{table*}[t]",
         r"\centering",
         r"\small",
         r"\begin{tabular}{lcccccc}",
         r"\toprule",
-        r"\textbf{Workload} & \textbf{Throughput (tok/s)} & \textbf{TTFT P50 (ms)} & \textbf{TTFT P99 (ms)} & \textbf{TPOT P50 (ms)} & \textbf{TPOT P99 (ms)} & \textbf{Latency P99 (ms)} \\",
+        tex_header,
         r"\midrule",
     ]
 
@@ -98,13 +114,15 @@ def generate_latex_table(results: list[BenchmarkResult]) -> str:
             f"{r.latency_ms.get('p99', 0.0):.1f} \\\\"
         )
 
-    lines.extend([
-        r"\bottomrule",
-        r"\end{tabular}",
-        r"\caption{nanoserve high-throughput serving and latency percentiles.}",
-        r"\label{tab:nanoserve_perf}",
-        r"\end{table*}",
-    ])
+    lines.extend(
+        [
+            r"\bottomrule",
+            r"\end{tabular}",
+            r"\caption{nanoserve high-throughput serving and latency percentiles.}",
+            r"\label{tab:nanoserve_perf}",
+            r"\end{table*}",
+        ]
+    )
 
     return "\n".join(lines)
 

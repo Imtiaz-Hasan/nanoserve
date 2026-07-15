@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.1.0] — 2026-08-19
+
+### Added
+- **INT8/FP8 Quantized KV Cache**: Block-level symmetric quantization halving memory footprint and doubling concurrent serving capacity
+- **Quantized Scatter/Gather**: High-fidelity dequantization pipeline with $>0.99$ cosine fidelity and $<0.05$ MAE attention parity
+- **Constrained Guided Decoding**: Step-wise `RegexLogitProcessor` enforcing strict regular expressions
+- **JSON Schema Logit Biasing**: `JsonSchemaLogitProcessor` enforcing structural JSON syntax and schema compliance
+- **Quantization & Guided Tests**: Comprehensive test suite covering quantization error bounds and grammar masking
+
 ## [1.0.0] — 2026-08-12
 
 ### Added
