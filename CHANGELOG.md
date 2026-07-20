@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.2.0] — 2026-08-26
+
+### Added
+- **Multi-LoRA Dynamic Adapter Hot-Swapping**: Zero-restart runtime loading, caching, and eviction of LoRA adapters on frozen base models
+- **Heterogeneous Batched Serving**: `LoraLinear` computes per-token adapter deltas allowing different requests in the same batch to run different LoRA adapters concurrently
+- **LoRA Manager**: Central lifecycle orchestrator managing adapter configurations, module injection, and metadata queries
+- **Sequence Routing**: Per-request `lora_name` tracking through `Sequence` and `SequenceGroup`
+- **LoRA Unit Test Suite**: Forward-pass parity, dynamic registration lifecycle, and heterogeneous batch isolation tests
+
 ## [1.1.0] — 2026-08-19
 
 ### Added

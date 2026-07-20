@@ -43,6 +43,7 @@ class Sequence:
     status: SequenceStatus = SequenceStatus.WAITING
     logical_block_table: list[int] = field(default_factory=list)
     num_computed_tokens: int = 0
+    lora_name: str | None = None
 
     @property
     def is_prefill_done(self) -> bool:
@@ -83,6 +84,7 @@ class Sequence:
             output_token_ids=list(self.output_token_ids),
             status=self.status,
             logical_block_table=list(self.logical_block_table),
+            lora_name=self.lora_name,
         )
 
 
@@ -99,6 +101,7 @@ class SequenceGroup:
     sampling_params: SamplingParams
     arrival_time: float = field(default_factory=time.monotonic)
     prompt_token_ids: list[int] = field(default_factory=list)
+    lora_name: str | None = None
 
     @property
     def is_finished(self) -> bool:
