@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.3.0] — 2026-09-02
+
+### Added
+- **Tensor Parallelism (Megatron-LM Style)**: Multi-worker model execution sharding query, key, value, gate, and up projections
+- **`ColumnParallelLinear`**: Zero-communication output dimension feature sharding ($D_{out} / TP$)
+- **`RowParallelLinear`**: Input dimension sharding ($D_{in} / TP$) with collective All-Reduce aggregation
+- **`VocabParallelEmbedding`**: Distributed token lookup across partitioned vocabulary shards
+- **`DistributedCommunicator`**: Unified PyTorch distributed backend and in-process CPU mock communicator for deterministic multi-worker testing
+- **Tensor Parallel Test Suite**: Exact mathematical parity across Column, Row, Vocab, and 2-layer SwiGLU MLP blocks
+
 ## [1.2.0] — 2026-08-26
 
 ### Added

@@ -26,6 +26,7 @@ nanoserve is not a wrapper. Every component — the block allocator, the schedul
 | **Quantized KV Cache** | ✅ | INT8/FP8 block quantization with 2x memory reduction (Week 13) |
 | **Constrained decoding** | ✅ | JSON Schema & regex logit biasing with prefix verification (Week 13) |
 | **Multi-LoRA Serving** | ✅ | Dynamic adapter hot-swapping & heterogeneous batched execution (Week 14) |
+| **Tensor Parallelism** | ✅ | Megatron-LM Column/Row/Vocab sharding with All-Reduce (Week 15) |
 | **OpenAI-compatible API** | ✅ | `/v1/chat/completions`, `/v1/completions`, SSE streaming |
 | **Scheduler** | ✅ | FCFS admission with block-budget enforcement |
 | **Prometheus metrics** | ✅ | TTFT/TPOT histograms, KV utilization, queue gauges |
