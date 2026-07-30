@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
+from torch import nn
 
 from nanoserve.distributed.communicator import CommunicatorProtocol
 
@@ -29,7 +29,9 @@ class ColumnParallelLinear(nn.Module):
         self.tp_size = tp_size
         self.rank = rank
 
-        assert out_features % tp_size == 0, f"out_features ({out_features}) must be divisible by tp_size ({tp_size})"
+        assert out_features % tp_size == 0, (
+            f"out_features ({out_features}) must be divisible by tp_size ({tp_size})"
+        )
         self.local_out_features = out_features // tp_size
 
         self.weight = nn.Parameter(torch.empty(self.local_out_features, in_features))
@@ -91,7 +93,9 @@ class RowParallelLinear(nn.Module):
         self.rank = rank
         self.communicator = communicator
 
-        assert in_features % tp_size == 0, f"in_features ({in_features}) must be divisible by tp_size ({tp_size})"
+        assert in_features % tp_size == 0, (
+            f"in_features ({in_features}) must be divisible by tp_size ({tp_size})"
+        )
         self.local_in_features = in_features // tp_size
 
         self.weight = nn.Parameter(torch.empty(out_features, self.local_in_features))

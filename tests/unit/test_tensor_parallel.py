@@ -1,8 +1,8 @@
 """Unit tests for Megatron-LM style Tensor Parallel layers and collective communicators."""
 
 import torch
-import torch.nn as nn
 import torch.nn.functional as F  # noqa: N812
+from torch import nn
 
 from nanoserve.distributed.communicator import MockDistributedCommunicator
 from nanoserve.distributed.layers import (
@@ -85,8 +85,12 @@ def test_vocab_parallel_embedding_parity() -> None:
     comm_0 = MockDistributedCommunicator(rank=0, tp_size=tp_size, shared_state=shared_state)
     comm_1 = MockDistributedCommunicator(rank=1, tp_size=tp_size, shared_state=shared_state)
 
-    vocab_0 = VocabParallelEmbedding.from_full_embedding(full_embed, rank=0, tp_size=tp_size, communicator=comm_0)
-    vocab_1 = VocabParallelEmbedding.from_full_embedding(full_embed, rank=1, tp_size=tp_size, communicator=comm_1)
+    vocab_0 = VocabParallelEmbedding.from_full_embedding(
+        full_embed, rank=0, tp_size=tp_size, communicator=comm_0
+    )
+    vocab_1 = VocabParallelEmbedding.from_full_embedding(
+        full_embed, rank=1, tp_size=tp_size, communicator=comm_1
+    )
 
     # Phase 1: publish shard embeddings
     _ = vocab_0(input_ids)
@@ -101,7 +105,7 @@ def test_vocab_parallel_embedding_parity() -> None:
 
 
 def test_end_to_end_parallel_mlp_parity() -> None:
-    """Verify 2-layer sharded MLP block (ColumnParallel gate/up -> RowParallel down) matches baseline."""
+    """Verify 2-layer sharded MLP block (Column gate/up -> Row down) matches baseline."""
     torch.manual_seed(42)
     hidden_size = 32
     intermediate_size = 64
@@ -125,12 +129,16 @@ def test_end_to_end_parallel_mlp_parity() -> None:
     # Worker 0 layers
     gate_0 = ColumnParallelLinear.from_full_linear(w_gate, rank=0, tp_size=tp_size)
     up_0 = ColumnParallelLinear.from_full_linear(w_up, rank=0, tp_size=tp_size)
-    down_0 = RowParallelLinear.from_full_linear(w_down, rank=0, tp_size=tp_size, communicator=comm_0)
+    down_0 = RowParallelLinear.from_full_linear(
+        w_down, rank=0, tp_size=tp_size, communicator=comm_0
+    )
 
     # Worker 1 layers
     gate_1 = ColumnParallelLinear.from_full_linear(w_gate, rank=1, tp_size=tp_size)
     up_1 = ColumnParallelLinear.from_full_linear(w_up, rank=1, tp_size=tp_size)
-    down_1 = RowParallelLinear.from_full_linear(w_down, rank=1, tp_size=tp_size, communicator=comm_1)
+    down_1 = RowParallelLinear.from_full_linear(
+        w_down, rank=1, tp_size=tp_size, communicator=comm_1
+    )
 
     act_0 = F.silu(gate_0(x)) * up_0(x)  # (2, 32)
     act_1 = F.silu(gate_1(x)) * up_1(x)  # (2, 32)

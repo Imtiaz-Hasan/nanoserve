@@ -1,7 +1,7 @@
-"""Unit tests for LoraLinear (base passthrough, single-adapter, and heterogeneous batched routing)."""
+"""Unit tests for LoraLinear (base passthrough, single-adapter, and batched routing)."""
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from nanoserve.lora.models import LoraLinear, LoraWeight
 
@@ -53,7 +53,7 @@ def test_lora_linear_single_adapter_parity() -> None:
 
 
 def test_lora_linear_heterogeneous_batch() -> None:
-    """Verify heterogeneous batch routes different sequences to different adapters in 1 forward pass."""
+    """Verify heterogeneous batch routes sequences to different adapters in 1 forward pass."""
     torch.manual_seed(42)
     in_features = 16
     out_features = 32

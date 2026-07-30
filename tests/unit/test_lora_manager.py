@@ -1,7 +1,7 @@
 """Unit tests for LoraManager (adapter registration, loading, unloading, and query)."""
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 from nanoserve.lora.config import LoraConfig
 from nanoserve.lora.manager import LoraManager

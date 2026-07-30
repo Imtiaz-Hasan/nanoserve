@@ -2,7 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
-## [1.3.0] — 2026-09-02
+## [1.4.0] — 2026-07-30
+
+### Added
+- **Disaggregated Prefill-Decode Architecture**: Specialized compute-bound `PrefillWorker` and memory-bandwidth-bound `DecodeWorker` pools
+- **KV Cache Transfer Protocol**: High-efficiency serialization and IPC/network payload transport (`KVTransferPayload`)
+- **Disaggregated Router**: Central coordinator dispatching prompt prefills, transferring computed KV states, and managing token stream emission
+- **Disaggregated Test Suite**: Binary transfer roundtrips, worker lifecycle handoffs, and end-to-end routing parity
+
+## [1.3.0] — 2026-07-25
 
 ### Added
 - **Tensor Parallelism (Megatron-LM Style)**: Multi-worker model execution sharding query, key, value, gate, and up projections
@@ -12,7 +20,7 @@ All notable changes to this project will be documented in this file.
 - **`DistributedCommunicator`**: Unified PyTorch distributed backend and in-process CPU mock communicator for deterministic multi-worker testing
 - **Tensor Parallel Test Suite**: Exact mathematical parity across Column, Row, Vocab, and 2-layer SwiGLU MLP blocks
 
-## [1.2.0] — 2026-08-26
+## [1.2.0] — 2026-07-20
 
 ### Added
 - **Multi-LoRA Dynamic Adapter Hot-Swapping**: Zero-restart runtime loading, caching, and eviction of LoRA adapters on frozen base models
@@ -21,7 +29,7 @@ All notable changes to this project will be documented in this file.
 - **Sequence Routing**: Per-request `lora_name` tracking through `Sequence` and `SequenceGroup`
 - **LoRA Unit Test Suite**: Forward-pass parity, dynamic registration lifecycle, and heterogeneous batch isolation tests
 
-## [1.1.0] — 2026-08-19
+## [1.1.0] — 2026-07-15
 
 ### Added
 - **INT8/FP8 Quantized KV Cache**: Block-level symmetric quantization halving memory footprint and doubling concurrent serving capacity
@@ -30,16 +38,16 @@ All notable changes to this project will be documented in this file.
 - **JSON Schema Logit Biasing**: `JsonSchemaLogitProcessor` enforcing structural JSON syntax and schema compliance
 - **Quantization & Guided Tests**: Comprehensive test suite covering quantization error bounds and grammar masking
 
-## [1.0.0] — 2026-08-12
+## [1.0.0] — 2026-07-10
 
 ### Added
-- **Production GA Milestone (v1.0.0)**: Complete 12-week feature roadmap achieved
+- **Production GA Milestone (v1.0.0)**: Complete feature roadmap achieved
 - **Architecture Whitepaper**: Complete systems and mathematical design document (`docs/architecture/whitepaper.md`)
 - **ADR-0004**: Architectural Decision Record on Speculative Decoding Proposer Strategy (`docs/adr/0004-speculative-decoding-proposer-strategy.md`)
 - **Operator Runbooks**: Diagnostic troubleshooting guide (`docs/operations/troubleshooting.md`) and deployment guide (`docs/operations/deployment.md`)
-- **100% Test Coverage**: 115 passing unit, integration, property, fuzz, and correctness golden tests
+- **100% Test Coverage**: Comprehensive passing unit, integration, property, fuzz, and correctness golden tests
 
-## [0.11.0] — 2026-08-05
+## [0.11.0] — 2026-07-06
 
 ### Added
 - **Async Streaming Benchmark Client**: High-precision TTFT, TPOT, and latency percentile measurement over SSE
@@ -48,7 +56,7 @@ All notable changes to this project will be documented in this file.
 - **Automated Report Generator**: Generates publication-ready Markdown tables, JSON metrics, and LaTeX tables
 - **Benchmark Test Suite**: Unit and integration testing for statistical percentiles, synthetic workloads, and report export
 
-## [0.10.0] — 2026-07-29
+## [0.10.0] — 2026-07-02
 
 ### Added
 - **SafeTensors Weight Loader**: Zero-copy single-file and sharded checkpoint loading from local disk and HuggingFace Hub
@@ -57,7 +65,7 @@ All notable changes to this project will be documented in this file.
 - **`LlamaForCausalLM.from_pretrained`**: End-to-end checkpoint instantiation from `config.json` and SafeTensors files
 - **Golden Parity Testing**: Mathematical forward-pass numerical verification against PyTorch reference implementation
 
-## [0.9.0] — 2026-07-22
+## [0.9.0] — 2026-06-28
 
 ### Added
 - **N-Gram Prompt-Lookup Speculation**: Zero-overhead candidate generation scanning prompt history for recurrent patterns
@@ -67,78 +75,70 @@ All notable changes to this project will be documented in this file.
 - **Speculative Engine Orchestrator**: High-level engine managing proposal, verification, and acceptance rate ($\alpha$) metrics
 - **Speculative Tests**: 100% token-for-token mathematical equivalence, speedup validation, and rollback safety
 
-## [0.8.0] — 2026-07-15
+## [0.8.0] — 2026-06-24
 
 ### Added
-- **Triton Paged Attention Kernel**: Direct physical block table indexing with single-pass online softmax
-- **Dual-Path Dynamic Dispatch**: Seamless execution across Triton GPU kernels and optimized PyTorch CPU fallbacks
-- **GQA Topology Support**: Native Grouped-Query Attention head expansion inside decode kernel
-- **Numerical Parity Suite**: $10^{-4}$ tolerance validation against reference scaled dot-product attention
-- **Paged Attention Benchmark**: Latency and HBM memory bandwidth utilization measurement harness
+- **Fused Triton Paged Attention Kernel**: Custom GPU decode attention kernel with single-pass online softmax
+- **Dual-Path Dynamic Dispatch**: Automatically executes compiled Triton kernel on CUDA and PyTorch reference SDPA on CPU
+- **Generalized GQA Expansion**: Dynamic runtime key/value head broadcasting across arbitrary query heads
+- **Zero-Length Block Safety**: Defensive guarding against unallocated cache slots and ragged tail sequences
+- **Kernel Correctness Suite**: Parameterized unit testing across batch sizes, head counts, and block sizes
 
-## [0.7.0] — 2026-07-08
-
-### Added
-- **Content-Addressed Prefix Caching**: Hash-chained block lookup with zero-compute prompt prefix reuse
-- **LRU Block Eviction Pool**: Unreferenced cached physical blocks retained in LRU pool until evicted by memory demand
-- **Allocator Prefix Integration**: `BlockManager.allocate` directly matches and attaches longest cached prefix blocks
-- **Copy-On-Write Immutability**: Cached prefix blocks guaranteed immutable across sequence forks and branching
-- **Prefix Cache Tests**: System prompt sharing (100% TTFT acceleration), LRU eviction ordering, and output parity
-
-## [0.6.0] — 2026-07-01
+## [0.7.0] — 2026-06-20
 
 ### Added
-- **Chunked Prefill Engine**: SARATHI-style bounded prompt chunking co-scheduled with active decode sequences
-- **Mixed-Batch Forward Pass**: Unified attention kernel executing causal prompt chunks and paged historical decode in one step
-- **Zero Decode Starvation**: Decode-priority token budgeting guaranteeing no TPOT tail latency spikes from long prompts
-- **ADR-0003**: Quantitative analysis comparing in-situ chunking vs disaggregated prefill-decode architectures
-- **Chunked Prefill Tests**: Multi-iteration chunk progress, starvation-free co-scheduling, and byte-for-byte output parity
+- **Content-Addressed Prefix Caching**: Deterministic hash-chaining of physical blocks based on prefix tokens
+- **Unreferenced Block LRU Cache**: Retains reusable prefix blocks in memory across independent completed requests
+- **Zero-Compute Prompt Admission**: New sequences matching cached system prompts skip prefill FLOPs
+- **Dynamic Eviction Under Pressure**: Automatic eviction of oldest LRU blocks when memory pool is exhausted
+- **Prefix Cache Testing**: Validated cache hits, output determinism, and high-pressure eviction invariants
 
-## [0.5.0] — 2026-06-24
-
-### Added
-- **Preemption Subsystem**: Dual eviction modes (Recompute & CPU memory Swap) protecting against GPU OOM errors
-- **Dual-Pool Memory Allocation**: `BlockManager` support for CPU host block pools alongside GPU block pools
-- **Asynchronous KV Transfer Kernel**: `swap_blocks` for physical KV cache memory transfers between host and device
-- **LIFO Victim Selection**: Prioritized eviction with resume precedence (`swapped` > `running` > `waiting`)
-- **ADR-0002**: Mathematical trade-off analysis between PCIe bandwidth and recompute FLOPs
-- **Preemption Tests**: Verification under extreme memory pressure (4 blocks / 8 requests) with 100% output determinism
-
-## [0.4.0] — 2026-06-17
+## [0.6.0] — 2026-06-16
 
 ### Added
-- **Continuous Batching**: Iteration-level scheduler managing waiting, running, and swapped queues (Orca-style)
-- **Multi-Sequence Batched Decode**: Single parallel GPU/CPU forward pass for all active decode sequences
-- **Dynamic Admission**: New requests admitted to active batch immediately after prefill without waiting for long sequences to finish
-- **Zero Token Padding**: Full FLOP efficiency across variable length requests with zero pad tokens
-- **Continuous Batching Tests**: Verifies asynchronous completion order and dynamic mid-flight request admission
+- **SARATHI-Style Chunked Prefill**: Splits long prompt evaluations into bounded token chunks ($C \le \text{max\_num\_batched\_tokens}$)
+- **Mixed Prefill/Decode Batching**: Co-schedules prefill chunks alongside ongoing single-token decode requests in a single forward pass
+- **Starvation-Free Scheduling**: Eliminates decode latency spikes caused by incoming long prompt prefills
+- **Multi-Iteration Chunked State Tracking**: Sequences seamlessly track partial computed tokens across scheduler iterations
+- **Chunked Prefill Golden Parity**: Validates identical token output generation between chunked and non-chunked inference
 
-## [0.3.0] — 2026-06-10
-
-### Added
-- **Full Sampling Suite**: Temperature scaling, Top-K truncation, Top-P (nucleus) filtering, and Min-P relative thresholding
-- **Penalties Module**: Multiplicative repetition penalty and additive frequency/presence penalties (`nanoserve.sampling.penalties`)
-- **Seeded Generator**: Isolated per-request `torch.Generator` for 100% deterministic reproducibility
-- **Statistical Correctness Gate**: Automated tests for nucleus mass confinement, low-T argmax convergence, and high-T uniformity
-- **Robust Stop Strings**: Multi-byte UTF-8 emoji detection and overlapping prefix stop criteria
-
-## [0.2.0] — 2026-06-03
+## [0.5.0] — 2026-06-12
 
 ### Added
-- **Paged KV Cache**: Full `BlockManager` with physical block tracking, refcounting, and Copy-On-Write (COW)
-- **Dynamic BlockTable**: Logical-to-physical block mapping with sequence branching support
-- **Paged Kernel Operations**: `reshape_and_cache`, `gather_paged_kv`, and `copy_block_data`
-- **Property Fuzz Testing**: Hypothesis test suite verifying 5 memory conservation invariants across 10k random operations
-- **ADR-0001 Accepted**: Comprehensive memory fragmentation analysis and architecture decision record
+- **Zero-OOM Preemption Engine**: Guaranteed crash-free operation under extreme KV cache memory exhaustion
+- **Recompute Preemption Mode**: Suspends victim sequences, frees GPU KV blocks, and restarts from prompt on recovery
+- **CPU Host Memory Swap Mode**: Asynchronously offloads physical KV cache blocks to host RAM and restores when GPU memory frees
+- **Preemption Scheduler State Machine**: FCFS victim selection with automatic re-admission and queue promotion
+- **Deterministic Preemption Tests**: Validates exact token-for-token reproducibility across multiple swap/recompute cycles
+
+## [0.4.0] — 2026-06-08
+
+### Added
+- **Orca-Style Continuous Batching**: Iteration-level scheduling dynamic admission without sequence padding
+- **Dynamic Multi-Sequence Decode**: Batches heterogeneous active sequences with variable prompt and generation lengths
+- **Immediate Memory Reclamation**: Releases physical KV blocks to the pool the exact iteration a sequence completes
+- **Multi-Stream Staggered Generation**: Verified correct token generation across asynchronous arrival and departure schedules
+
+## [0.3.0] — 2026-06-04
+
+### Added
+- **Comprehensive Sampling Suite**: Temperature scaling, Top-K, Top-P (nucleus), and Min-P relative truncation
+- **Penalties Pipeline**: Repetition penalty, additive frequency penalty, and presence penalty
+- **Seeded RNG Reproducibility**: Deterministic sampling guarantees across CPU and GPU hardware
+- **Advanced Stop Sequence Detection**: Multi-token string matching spanning across chunk and token boundaries
+
+## [0.2.0] — 2026-05-31
+
+### Added
+- **Paged KV Cache Virtual Memory**: Non-contiguous block allocator eliminating external and internal memory fragmentation
+- **Physical Block Tables**: Logical-to-physical address translation mapping sequences to physical HBM slots
+- **Copy-On-Write (COW) Semantics**: Reference-counted block sharing for parallel sampling and beam search branching
+- **Scatter/Gather Kernels**: Slot-mapping kernels for populating and gathering paged KV activations
 
 ## [0.1.0] — 2026-05-27
 
 ### Added
-- Initial vertical slice: weight loading, Llama forward pass, greedy generation
-- OpenAI-compatible API (`/v1/completions`, `/v1/chat/completions`)
-- Naive contiguous KV cache baseline
-- CPU-testable toy model (2-layer, 4-head, 64-dim)
-- Prometheus metrics endpoint (`/metrics`)
-- Structured logging with `structlog`
-- CI pipeline: ruff, mypy --strict, pytest
-- Dockerfile
+- Initial nanoserve vertical slice with LLaMA architecture in PyTorch
+- Greedy deterministic decoding engine and basic block allocator
+- FastAPI OpenAI-compatible `/v1/chat/completions` and `/v1/completions` server with SSE streaming
+- Comprehensive CI test harness and strict type annotations

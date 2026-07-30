@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import torch
-import torch.nn as nn
+from torch import nn
 
 
 @dataclass
@@ -64,7 +64,6 @@ class LoraLinear(nn.Module):
             name = next(iter(unique_adapters))
             if name is not None and name in self.adapters:
                 w = self.adapters[name]
-                # delta = s * (X @ A^T) @ B^T
                 delta = (x_flat @ w.lora_a.t()) @ w.lora_b.t() * w.scaling
                 out_flat = out_flat + delta
             return out_flat.view(orig_shape)

@@ -1,4 +1,4 @@
-"""Distributed Communicator: collective operations wrapper supporting PyTorch DDP and in-process mock."""
+"""Distributed Communicator: collective communication wrapper for PyTorch and mock."""
 
 from __future__ import annotations
 
@@ -25,9 +25,11 @@ class CommunicatorProtocol(Protocol):
 
 
 class MockDistributedCommunicator:
-    """In-process mock communicator for single-process testing of multi-rank tensor parallel layers."""
+    """In-process mock communicator for testing multi-rank tensor parallel layers."""
 
-    def __init__(self, rank: int, tp_size: int, shared_state: dict[str, list[torch.Tensor]]) -> None:
+    def __init__(
+        self, rank: int, tp_size: int, shared_state: dict[str, list[torch.Tensor]]
+    ) -> None:
         self.rank = rank
         self.tp_size = tp_size
         self._shared_state = shared_state
